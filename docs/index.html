@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="theme-color" content="#1a5fb4">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Docket Recorder</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📋%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #f4f6f9; --card: #ffffff; --text: #17202b; --muted: #5c6878;
+      --accent: #1a5fb4; --accent-text: #ffffff; --accent-soft: #e3ecf9;
+      --ok: #1e7a3c; --warn: #8a4f00; --warn-bg: #fff1dc;
+      --border: #d5dbe3; --error: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #11151b; --card: #1b222c; --text: #e8edf3; --muted: #9aa6b5;
+        --accent: #5b9bf0; --accent-text: #0b1220; --accent-soft: #1d2b40;
+        --ok: #5fcf85; --warn: #f0b05b; --warn-bg: #3a2a12;
+        --border: #2d3743; --error: #f28b82;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 640px; margin: 0 auto; padding: 0 16px 110px; }
+    [hidden] { display: none !important; }
+    button { font: inherit; color: inherit; cursor: pointer; }
+
+    /* Top bar */
+    .bar {
+      position: sticky; top: 0; z-index: 5; background: var(--bg);
+      display: flex; align-items: center; gap: 8px; padding: 12px 0 8px;
+    }
+    .bar h1 { font-size: 22px; margin: 0; flex: 1; }
+    .icon-btn {
+      border: 0; background: none; padding: 8px 10px; border-radius: 10px;
+      font-size: 17px; font-weight: 600; color: var(--accent);
+    }
+
+    /* Search + sort */
+    input[type=search] {
+      width: 100%; font: inherit; padding: 12px 14px; border-radius: 12px;
+      border: 2px solid var(--border); background: var(--card); color: var(--text);
+    }
+    input[type=search]:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    .seg { display: flex; gap: 6px; margin: 10px 0 4px; flex-wrap: wrap; align-items: center; }
+    .seg span { color: var(--muted); font-size: 14px; margin-right: 2px; }
+    .seg button {
+      border: 1px solid var(--border); background: var(--card); border-radius: 999px;
+      padding: 6px 12px; font-size: 14px;
+    }
+    .seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+    .count { color: var(--muted); font-size: 14px; margin: 6px 0; }
+
+    /* Docket cards */
+    .card {
+      display: block; width: 100%; text-align: left; background: var(--card);
+      border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin: 0 0 10px;
+    }
+    .card .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+    .card .num { font-weight: 700; font-size: 18px; }
+    .pill { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    .card .client { font-weight: 600; margin-top: 2px; }
+    .card .addr { color: var(--muted); font-size: 15px; }
+    .card .meta { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .flag { color: var(--warn); font-weight: 600; }
+    .card.nodocket { border-color: var(--warn); background: var(--warn-bg); }
+
+    /* Docket page */
+    .sub { margin: 0; color: var(--muted); }
+    .sub strong { color: var(--text); }
+    .stats { display: flex; gap: 8px; margin: 12px 0; }
+    .stat { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 8px; text-align: center; }
+    .stat b { display: block; font-size: 20px; }
+    .stat small { color: var(--muted); }
+    h2 { font-size: 15px; color: var(--muted); margin: 18px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+
+    /* Visit cards */
+    details.visit { background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin: 0 0 10px; }
+    details.visit.new { border: 2px solid var(--ok); }
+    details.visit summary { list-style: none; padding: 12px 14px; cursor: pointer; }
+    details.visit summary::-webkit-details-marker { display: none; }
+    .vdate { font-weight: 700; }
+    .vtimes { color: var(--muted); font-size: 15px; }
+    .vwork { margin-top: 4px; }
+    .chip { display: inline-block; margin-top: 6px; font-size: 13px; padding: 2px 8px; border-radius: 999px; }
+    .chip.warn { background: var(--warn-bg); color: var(--warn); }
+    .chip.ok { color: var(--ok); padding-left: 0; }
+    details.visit dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; padding: 0 14px 12px; font-size: 15px; }
+    dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .vlink { display: block; padding: 0 14px 12px; font-size: 14px; color: var(--accent); }
+
+    /* Buttons */
+    .primary {
+      display: block; width: 100%; border: 0; border-radius: 14px; padding: 18px;
+      font-size: 20px; font-weight: 700; background: var(--accent); color: var(--accent-text);
+    }
+    .primary:disabled { opacity: .55; }
+    .fab {
+      position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 6;
+      width: calc(100% - 32px); max-width: 608px; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+    }
+    .row { display: flex; gap: 10px; margin: 10px 0; }
+    .secondary {
+      border: 2px solid var(--border); background: var(--card); border-radius: 12px;
+      padding: 10px 16px; font-weight: 600;
+    }
+    .mic { flex: 1; font-size: 18px; padding: 14px; }
+    .mic.listening { background: var(--error); color: #fff; border-color: var(--error); animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .75; } }
+    @media (prefers-reduced-motion: reduce) { .mic.listening { animation: none; } }
+
+    /* Recorder */
+    .hint { color: var(--muted); font-size: 15px; margin: 0 0 10px; }
+    textarea {
+      width: 100%; padding: 12px; font: inherit;
+      border: 2px solid var(--border); border-radius: 12px;
+      background: var(--card); color: var(--text); resize: vertical;
+    }
+    textarea.big { min-height: 38vh; padding: 14px; font-size: 19px; }
+
+    /* Voice conversation */
+    .toggle {
+      border: 1px solid var(--border); background: var(--card); border-radius: 999px;
+      padding: 6px 12px; font-size: 14px; font-weight: 600;
+    }
+    .toggle[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+    .proposal dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0; font-size: 15px; }
+    .proposal .from { color: var(--muted); text-decoration: line-through; }
+    .proposal .flag { margin: 6px 0 0; font-size: 15px; }
+    .said-back { font-style: italic; color: var(--muted); margin: 10px 0 0; font-size: 15px; }
+    .thinking { color: var(--muted); text-align: center; padding: 24px; }
+    .banner.listen { background: var(--accent-soft); color: var(--accent); }
+    .row input[type=text] {
+      flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border: 2px solid var(--border);
+      border-radius: 12px; background: var(--card); color: var(--text);
+    }
+    .wide { display: block; width: 100%; margin: 10px 0; }
+    details.said ol { margin: 6px 0 0; padding-left: 20px; }
+    .tap-target { cursor: pointer; padding: 22px 14px; font-size: 18px; text-align: center; }
+    .voicelog pre { white-space: pre-wrap; font-size: 12px; margin: 6px 0 0; max-height: 240px; overflow: auto; }
+    .toast {
+      position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 20; margin: 0 auto;
+      max-width: 608px; box-shadow: 0 4px 14px rgba(0,0,0,.25); cursor: pointer;
+    }
+
+    /* Edit screen */
+    .card .hint { margin: 4px 0 8px; }
+    .field { display: block; margin: 0 0 12px; }
+    .field span { display: block; font-size: 14px; color: var(--muted); margin-bottom: 3px; }
+    .field input {
+      width: 100%; font: inherit; padding: 10px 12px; border: 2px solid var(--border);
+      border-radius: 10px; background: var(--card); color: var(--text);
+    }
+    .field input:focus { outline: none; border-color: var(--accent); }
+    .field.changed input, .field.changed textarea { border-color: var(--ok); background: var(--accent-soft); }
+    .check { display: flex; gap: 10px; align-items: center; margin: 4px 0 14px; font-weight: 600; }
+    .check input { width: 22px; height: 22px; }
+    details.said { color: var(--muted); font-size: 15px; margin-bottom: 12px; }
+    details.said summary { cursor: pointer; }
+    .vactions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 0 14px 12px; }
+    .vactions .vlink { padding: 0; }
+    .banner { border-radius: 12px; padding: 10px 14px; margin: 0 0 12px; font-weight: 600; }
+    .banner.ok { background: var(--accent-soft); color: var(--ok); }
+    .banner.warn { background: var(--warn-bg); color: var(--warn); }
+    .banner.error { background: var(--warn-bg); color: var(--error); }
+    .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  </style>
+</head>
+<body>
+<main id="app"><p class="empty">Loading dockets…</p></main>
+
+<script>
+/* ════════════════  State  ════════════════ */
+// Settings and drafts are kept on the phone. If the phone won't store them, they're kept
+// in memory until the app is closed.
+const memoryPrefs = {};
+const NONE = '_none';            // route key for visits with no docket number
+const state = {
+  visits: [], columns: [], sheetUrl: '',
+  loaded: false, error: '',
+  sort: readPref('docketSort', 'date'),
+  query: '',
+  flash: null,                   // { row, status } after a save, shown once
+};
+const app = document.getElementById('app');
+// Adds things to the page, skipping empty bits and unpacking lists.
+const put = (...kids) => kids.flat(Infinity).forEach(k => { if (k !== null && k !== undefined && k !== false) app.append(k); });
+
+/* ════════════════  Small helpers  ════════════════ */
+function readPref(key, fallback) {
+  try { const v = localStorage.getItem(key); if (v !== null) return v || fallback; } catch (e) {}
+  return key in memoryPrefs ? memoryPrefs[key] || fallback : fallback;
+}
+function writePref(key, value) {
+  memoryPrefs[key] = value;
+  try { localStorage.setItem(key, value); } catch (e) {}
+}
+
+// Builds an element. Text is always set with textContent, so nothing typed can break the page.
+function el(tag, props, ...kids) {
+  const node = document.createElement(tag);
+  Object.entries(props || {}).forEach(([k, v]) => {
+    if (v === undefined || v === null || v === false) return;
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v === true ? '' : v);
+  });
+  kids.flat(Infinity).forEach(kid => { if (kid !== null && kid !== undefined && kid !== false) node.append(kid); });
+  return node;
+}
+
+function fmtDate(iso, withDay) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  if (!m) return iso || 'No date';
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return d.toLocaleDateString(undefined, { weekday: withDay ? 'short' : undefined, day: 'numeric', month: 'short', year: 'numeric' });
+}
+const natural = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+const needsCheck = v => v.status && v.status !== 'OK' && !v.reviewed;
+const docketLabel = d => d.key === NONE ? 'No docket number' : 'Docket ' + d.number;
+
+/* ════════════════  Grouping visits into dockets  ════════════════ */
+function getDockets() {
+  const map = {};
+  state.visits.forEach(v => {
+    const key = v.docket_number || NONE;
+    const d = map[key] || (map[key] = { key, number: v.docket_number, client: '', site: '', visits: [], lastDate: '', toCheck: 0 });
+    d.visits.push(v);
+    if (v.client) d.client = v.client;     // latest non-empty value wins
+    if (v.site) d.site = v.site;
+    if ((v.job_date || '') > d.lastDate) d.lastDate = v.job_date;
+    if (needsCheck(v)) d.toCheck++;
+  });
+  return Object.values(map);
+}
+
+function sortDockets(list) {
+  const sorters = {
+    date:   (a, b) => (b.lastDate || '').localeCompare(a.lastDate || '') || natural(a.number, b.number),
+    docket: (a, b) => natural(a.number, b.number),
+    client: (a, b) => (!a.client - !b.client) || natural(a.client, b.client) || natural(a.number, b.number),
+  };
+  // Notes with no docket number always go first, because they need sorting out.
+  return list.sort((a, b) => {
+    if (a.key === NONE) return -1;
+    if (b.key === NONE) return 1;
+    return sorters[state.sort](a, b);
+  });
+}
+
+function matches(d, query) {
+  if (!query) return true;
+  const hay = [d.number, d.client, d.site].concat(
+    d.visits.map(v => [v.work_done, v.notes, v.follow_up, v.equipment, v.site, v.client, v.transcript].join(' '))
+  ).join(' ').toLowerCase();
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => hay.includes(word));
+}
+
+/* ════════════════  Navigation (works with the phone's back button)  ════════════════ */
+function go(route, replace) {
+  history[replace ? 'replaceState' : 'pushState']({ route }, '', '#' + route);
+  render(route);
+  window.scrollTo(0, 0);
+}
+// In-app "‹ Back" buttons go straight to the parent screen, replacing the current one, so the
+// phone's own back button still makes sense afterwards.
+const goUp = route => go(route, true);
+const docketRoute = number => 'docket/' + encodeURIComponent(number || NONE);
+const backButton = (label, route) => el('button', { class: 'icon-btn', type: 'button', text: '‹ ' + label, onclick: () => goUp(route) });
+
+let currentRoute = '';
+// Screens with unsaved typing aren't redrawn by background refreshes.
+const isFormScreen = route => /^(record|edit|change)\//.test(route);
+function render(route) {
+  currentRoute = route || '';
+  // Leaving a screen ends any conversation on it: stop listening and talking.
+  if (currentTalk && currentTalk.stopAll) currentTalk.stopAll();
+  currentTalk = null;
+  stopTalking();
+  const [view, rawKey] = currentRoute.split('/');
+  const key = rawKey ? decodeURIComponent(rawKey) : '';
+  app.replaceChildren();
+  if (view === 'connect') return renderConnect();
+  if (view === 'record') return renderTalk(key === 'new' ? { type: 'any' } : { type: 'docket', docket: key });
+  if (!state.loaded) return app.append(el('p', { class: 'empty', text: state.error || 'Loading dockets…' }));
+  if (view === 'docket') return renderDocket(key);
+  if (view === 'edit') return renderEdit(Number(key));
+  if (view === 'change') return renderTalk({ type: 'row', row: Number(key) });
+  renderList();
+}
+
+/* ════════════════  View 1: all dockets  ════════════════ */
+function renderList() {
+  const listBox = el('div');
+  const countLine = el('p', { class: 'count' });
+
+  function drawCards() {
+    const all = getDockets();
+    const shown = sortDockets(all.filter(d => matches(d, state.query)));
+    countLine.textContent = state.query
+      ? shown.length + ' of ' + all.length + ' dockets match'
+      : all.length + (all.length === 1 ? ' docket' : ' dockets');
+    listBox.replaceChildren();
+    if (!all.length) return listBox.append(el('p', { class: 'empty', text: 'No dockets yet. Tap 🎤 New note to record your first visit.' }));
+    if (!shown.length) return listBox.append(el('p', { class: 'empty', text: 'Nothing matches "' + state.query + '".' }));
+    shown.forEach(d => listBox.append(docketCard(d)));
+  }
+
+  const sortButton = (value, label) => el('button', {
+    type: 'button', 'aria-pressed': String(state.sort === value), text: label,
+    onclick: e => {
+      state.sort = value; writePref('docketSort', value);
+      document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b === e.currentTarget)));
+      drawCards();
+    },
+  });
+
+  put(
+    el('div', { class: 'bar' },
+      el('h1', { text: 'Dockets' }),
+      el('button', { class: 'icon-btn', type: 'button', text: '↻ Refresh', onclick: () => loadData() }),
+      el('button', { class: 'icon-btn', type: 'button', text: '⚙', 'aria-label': 'Connection settings', onclick: () => go('connect') })),
+    el('input', {
+      type: 'search', placeholder: 'Search docket, client, address, work…', value: state.query,
+      oninput: e => { state.query = e.target.value; drawCards(); },
+    }),
+    el('div', { class: 'seg' }, el('span', { text: 'Sort by' }),
+      sortButton('date', 'Latest visit'), sortButton('docket', 'Docket #'), sortButton('client', 'Client')),
+    countLine,
+    listBox,
+    el('button', { class: 'primary fab', type: 'button', text: '🎤 New note or change', onclick: () => go('record/new') }),
+  );
+  drawCards();
+}
+
+function docketCard(d) {
+  const visits = d.visits.length + (d.visits.length === 1 ? ' visit' : ' visits');
+  return el('button', { class: 'card' + (d.key === NONE ? ' nodocket' : ''), type: 'button',
+      onclick: () => go('docket/' + encodeURIComponent(d.key)) },
+    el('div', { class: 'top' }, el('span', { class: 'num', text: docketLabel(d) }), el('span', { class: 'pill', text: visits })),
+    d.key === NONE
+      ? el('div', { class: 'addr', text: 'Tap a visit, then Edit, to add its docket number' })
+      : [el('div', { class: 'client', text: d.client || 'No client name' }),
+         el('div', { class: 'addr', text: d.site || 'No address' })],
+    el('div', { class: 'meta' },
+      'Last visit ' + fmtDate(d.lastDate),
+      d.toCheck ? el('span', { class: 'flag', text: ' · ⚠ ' + d.toCheck + ' to check' }) : null),
+  );
+}
+
+/* ════════════════  View 2: one docket and its visits  ════════════════ */
+function renderDocket(key) {
+  const d = getDockets().find(x => x.key === key);
+  const back = backButton('Dockets', '');
+  if (!d) {
+    app.append(el('div', { class: 'bar' }, back), el('p', { class: 'empty', text: 'That docket has no visits yet.' }));
+    return;
+  }
+  const visits = d.visits.slice().sort((a, b) => (b.job_date || '').localeCompare(a.job_date || '') || b.row - a.row);
+  const hours = visits.reduce((sum, v) => sum + (parseFloat(v.hours) || 0), 0);
+  const km = visits.reduce((sum, v) => sum + (parseFloat(v.travel_km) || 0), 0);
+  const flash = state.flash; state.flash = null;
+
+  put(
+    el('div', { class: 'bar' }, back),
+    flash ? el('div', { class: 'banner ' + (flash.status === 'OK' ? 'ok' : 'warn'),
+      text: flash.message || (flash.status === 'OK' ? 'Saved ✓' : 'Saved ✓, but check: ' + flash.status.replace(/^Needs review: /, '')) }) : null,
+    el('h1', { text: docketLabel(d), style: 'margin:0 0 4px;font-size:24px' }),
+    d.key !== NONE ? [el('p', { class: 'sub' }, el('strong', { text: d.client || 'No client name' })),
+                      el('p', { class: 'sub', text: d.site || 'No address' })] : null,
+    el('div', { class: 'stats' },
+      el('div', { class: 'stat' }, el('b', { text: visits.length }), el('small', { text: 'visits' })),
+      el('div', { class: 'stat' }, el('b', { text: round(hours) }), el('small', { text: 'hours on site' })),
+      el('div', { class: 'stat' }, el('b', { text: round(km) }), el('small', { text: 'km' }))),
+    d.key !== NONE
+      ? el('button', { class: 'primary', type: 'button', text: '🎤 Add a visit or change',
+          onclick: () => go('record/' + encodeURIComponent(d.number)) })
+      : null,
+    el('h2', { text: 'Visits' }),
+    visits.map(v => visitCard(v, flash && flash.row === v.row)),
+  );
+}
+
+function visitCard(v, isNew) {
+  const times = [v.arrived && v.departed ? v.arrived + '–' + v.departed : (v.arrived ? 'Arrived ' + v.arrived : (v.departed ? 'Left ' + v.departed : 'No times')),
+                 v.hours ? v.hours + ' h' : ''].filter(Boolean).join(' · ');
+  const chip = needsCheck(v) ? el('span', { class: 'chip warn', text: '⚠ ' + v.status.replace(/^Needs review: /, '') })
+             : v.reviewed ? el('span', { class: 'chip ok', text: '✓ Reviewed' }) : null;
+  const shownAbove = ['job_date', 'work_done', 'reviewed', 'status', 'docket_number'];
+  const details = state.columns
+    .filter(c => shownAbove.indexOf(c.key) === -1 && v[c.key] !== '' && v[c.key] !== undefined)
+    .map(c => [el('dt', { text: c.key === 'transcript' ? 'What was said' : c.header }), el('dd', { text: String(v[c.key]) })]);
+
+  return el('details', { class: 'visit' + (isNew ? ' new' : ''), open: isNew },
+    el('summary', {},
+      el('div', { class: 'vdate', text: fmtDate(v.job_date, true) }),
+      el('div', { class: 'vtimes', text: times }),
+      v.work_done ? el('div', { class: 'vwork', text: v.work_done }) : null,
+      v.follow_up ? el('div', { class: 'vtimes', text: 'Follow-up: ' + v.follow_up }) : null,
+      chip),
+    el('dl', {}, details),
+    el('div', { class: 'vactions' },
+      el('button', { class: 'secondary', type: 'button', text: '✏️ Edit this visit', onclick: () => go('edit/' + v.row) }),
+      state.sheetUrl ? el('a', { class: 'vlink', href: state.sheetUrl + '&range=A' + v.row, target: '_blank', text: 'Open row in sheet ↗' }) : null),
+  );
+}
+const round = n => Math.round(n * 100) / 100;
+
+/* ════════════════  View 3: the voice conversation  ════════════════
+   With Hands-free on, everything after the first tap is spoken:
+     1. it starts listening straight away; he says the note and ends with "that's it" (or pauses)
+     2. Claude proposes a new visit or a change; the app reads it back
+     3. a beep, then it listens for his answer: "yes" saves, "cancel" stops, "read it again"
+        repeats, and anything else is a correction that goes back to step 2
+   With Hands-free off, the same check is shown on screen with buttons.
+   scope: { type: 'any' } from the main screen, { type: 'docket', docket } from a docket's page,
+          { type: 'row', row } from a visit's Edit screen. */
+let currentTalk = null;   // the conversation on screen; callbacks from an old one are ignored
+
+function renderTalk(scope) {
+  const talk = { notes: [], proposal: null, retried: false };
+  currentTalk = talk;
+  const alive = () => currentTalk === talk;
+
+  let title, sub, parent, example;
+  if (scope.type === 'row') {
+    const v = state.visits.find(x => x.row === scope.row);
+    if (!v) return put(el('div', { class: 'bar' }, backButton('Dockets', '')), el('p', { class: 'empty', text: 'That visit couldn\'t be found.' }));
+    title = 'Change by voice';
+    sub = (v.docket_number ? 'Docket ' + v.docket_number : 'No docket number') + ' · ' + fmtDate(v.job_date, true);
+    parent = 'edit/' + v.row;
+    example = 'e.g. I actually left at quarter to twelve, and add that I left two pegs by the gate. That\'s it.';
+  } else if (scope.type === 'docket') {
+    const d = getDockets().find(x => x.number === scope.docket);
+    title = 'Docket ' + scope.docket;
+    sub = [d && d.client, d && d.site].filter(Boolean).join(', ') || 'Add a visit, or change one of its visits';
+    parent = docketRoute(scope.docket);
+    example = 'e.g. Back at the site at eight, finished the east boundary, left ten fifteen, 40 k. That\'s it.';
+  } else {
+    title = 'New note';
+    sub = 'A new visit, or a change to one you\'ve already recorded';
+    parent = '';
+    example = 'e.g. Docket 4521, Henderson place on Mill Road, got there quarter past nine, set four pegs, left eleven thirty, 42 k. That\'s it.';
+  }
+  const draftKey = 'draft:' + (scope.type === 'row' ? 'row' + scope.row : scope.docket || 'new');
+
+  const message = el('div', { hidden: true });
+  const show = (kind, text) => { message.hidden = false; message.className = 'banner ' + kind; message.textContent = text; };
+  const hide = () => { message.hidden = true; };
+
+  // Hands-free on/off, remembered on this phone.
+  const hfLabel = () => handsFree() ? '🔊 Hands-free: on' : '🔇 Hands-free: off';
+  const hfButton = el('button', { class: 'toggle', type: 'button', 'aria-pressed': String(handsFree()), text: hfLabel(),
+    onclick: () => {
+      writePref('talkBack', handsFree() ? 'off' : 'on');
+      hfButton.textContent = hfLabel(); hfButton.setAttribute('aria-pressed', String(handsFree()));
+      if (handsFree()) primeAudio(); else stopTalking();
+    } });
+  const testButton = el('button', { class: 'toggle', type: 'button', text: '🔊 Test', onclick: () => {
+    show('ok', 'Playing a test sentence. Voice: ' + testSpeech() + '. If you hear nothing, check the media volume.');
+  } });
+
+  /* ── Step 1: the note ── */
+  const note = el('textarea', { class: 'big', placeholder: example, oninput: () => writePref(draftKey, note.value) });
+  note.value = readPref(draftKey, '');
+  let noteListen = null;
+  const micBtn = el('button', { class: 'secondary mic', type: 'button', text: '🎤 Tap to talk',
+    onclick: () => (noteListen ? noteListen.stop() : listenForNote()) });
+  const micLook = on => { micBtn.classList.toggle('listening', on); micBtn.textContent = on ? '■ Done  (listening…)' : '🎤 Tap to talk'; };
+
+  function listenForNote() {
+    if (!micAvailable()) return show('warn', 'This phone\'s browser can\'t listen. Tap the box and use the 🎤 on your keyboard.');
+    stopTalking();
+    primeAudio();
+    hide();
+    micLook(true);
+    beep();
+    noteListen = listen({
+      mode: 'note',
+      before: note.value,
+      onWords: text => { note.value = text; writePref(draftKey, text); },
+      onEnd: (text, why) => {
+        noteListen = null;
+        if (!alive()) return;
+        micLook(false);
+        note.value = text; writePref(draftKey, text);
+        if (why === 'blocked') return show('warn', 'The phone didn\'t let the app listen. Tap 🎤 Tap to talk to try again.');
+        if (why === 'failed') return show('warn', 'The mic stopped working. Tap 🎤 Tap to talk to try again.');
+        if (text.trim() && why !== 'cancelled') next();
+      },
+    });
+  }
+
+  const nextButton = el('button', { class: 'primary', type: 'button', text: 'Next ›', onclick: () => {
+    primeAudio();
+    if (noteListen) noteListen.stop(); else next();   // stopping the mic carries on to the next step
+  } });
+  const compose = el('div', {},
+    el('p', { class: 'hint', text: micAvailable()
+      ? 'Say ' + (scope.type === 'row' ? 'what to change' : 'what you did, or what to change on a visit you\'ve already recorded') +
+        '. It keeps listening through pauses. Say "that\'s it" when you\'re done.'
+      : 'Tap the box, then the 🎤 on your keyboard, and say what you did. Then tap Next.' }),
+    note,
+    el('div', { class: 'row' }, micAvailable() ? micBtn : null, el('button', { class: 'secondary', type: 'button', text: 'Clear', onclick: () => {
+      if (noteListen) noteListen.cancel();
+      if (note.value && !confirm('Clear this note?')) return;
+      note.value = ''; writePref(draftKey, '');
+    } })),
+    nextButton);
+
+  /* ── Step 2: check what Claude proposes ── */
+  const review = el('div', { hidden: true });
+  const listening = el('div', { class: 'banner listen', hidden: true });
+  let replyListen = null;
+
+  function next() {
+    const text = note.value.trim();
+    if (!text) return show('error', 'Say or type something first.');
+    talk.notes = [text]; talk.proposal = null;
+    compose.hidden = true; review.hidden = false;
+    ask();
+  }
+
+  // Sends everything said so far to Claude, then shows and reads out the proposal.
+  function ask() {
+    hide();
+    review.replaceChildren(el('div', { class: 'card thinking', text: 'Checking…' }));
+    vlog('checking with Claude');
+    server()
+      .withSuccessHandler(p => {
+        if (!alive()) return;
+        vlog('proposal: ' + p.action + (p.missing.length ? ', missing ' + p.missing.join(', ') : ''));
+        talk.proposal = p;
+        drawReview();
+        if (handsFree()) speakThenListen(p.confirmation);
+      })
+      .withFailureHandler(err => {
+        if (!alive()) return;
+        vlog('Claude check failed: ' + err.message);
+        drawFailure(err);
+        speak('Sorry, I couldn\'t check that.' + (scope.type === 'row' ? '' : ' You can save it as it is and sort it out later.'));
+      })
+      .proposeEntry(talk.notes, scope, talk.proposal);
+  }
+
+  function speakThenListen(text) {
+    speak(text, () => afterSpeechEnds(() => { if (alive() && handsFree()) awaitReply(); }));
+  }
+
+  function drawReview() {
+    const p = talk.proposal;
+    let heading, body;
+    if (p.action === 'update') {
+      heading = 'Change to ' + (p.target.docket ? 'docket ' + p.target.docket : 'visit') + ' · ' + fmtDate(p.target.job_date, true);
+      body = p.changes.length
+        ? el('dl', {}, p.changes.map(c => [el('dt', { text: c.label }),
+            el('dd', {}, el('span', { class: 'from', text: c.from || '(blank)' }), ' → ', el('strong', { text: c.to || '(blank)' }))]))
+        : el('p', { class: 'hint', text: 'No changes yet.' });
+    } else if (p.action === 'new') {
+      heading = 'New visit · ' + (p.docket ? 'Docket ' + p.docket : 'no docket number');
+      const shown = state.columns.filter(c => p.fields[c.key]);
+      body = el('dl', {}, shown.map(c => [el('dt', { text: c.header }), el('dd', { text: p.fields[c.key] })]),
+        p.hours !== '' ? [el('dt', { text: 'Hours on site' }), el('dd', { text: String(p.hours) })] : null);
+    } else {
+      heading = 'Not sure yet';
+      body = el('p', { class: 'hint', text: 'Answer the question below, or say which docket and day you mean.' });
+    }
+
+    const typed = el('input', { type: 'text', placeholder: 'Or type a change…' });
+    const sendTyped = () => { const t = typed.value.trim(); if (t) { typed.value = ''; handleReply(t); } };
+    typed.addEventListener('keydown', e => { if (e.key === 'Enter') sendTyped(); });
+
+    review.replaceChildren(
+      el('section', { class: 'card proposal' },
+        el('div', { class: 'num', text: heading }),
+        body,
+        p.missing.length && p.action !== 'unclear' ? el('p', { class: 'flag', text: '⚠ Still missing: ' + p.missing.join(', ') }) : null,
+        p.needs_review && p.review_reason ? el('p', { class: 'flag', text: '⚠ ' + p.review_reason }) : null,
+        el('p', { class: 'said-back', text: '💬 ' + p.confirmation })),
+      listening,
+      el('button', { class: 'primary', type: 'button', text: p.action === 'update' ? '✓ Save change' : '✓ Save',
+        disabled: p.action === 'unclear', onclick: () => save() }),
+      el('div', { class: 'row' },
+        micAvailable() ? el('button', { class: 'secondary mic', type: 'button', text: '🎤 Answer / change',
+          onclick: () => { stopTalking(); primeAudio(); awaitReply(); } }) : null,
+        el('button', { class: 'secondary', type: 'button', text: '✕ Discard', onclick: discard })),
+      el('div', { class: 'row' }, typed, el('button', { class: 'secondary', type: 'button', text: 'Send', onclick: sendTyped })),
+      el('details', { class: 'said' }, el('summary', { text: 'What you said' }),
+        el('ol', {}, talk.notes.map(n => el('li', { text: n })))),
+    );
+  }
+
+  function drawFailure(err) {
+    review.replaceChildren(
+      el('div', { class: 'banner error', text: 'Couldn\'t check that (' + err.message + ').' }),
+      el('button', { class: 'primary', type: 'button', text: 'Try again', onclick: ask }),
+      scope.type !== 'row'
+        ? el('button', { class: 'secondary wide', type: 'button', text: 'Save it as it is (sort out later)', onclick: () => save(true) })
+        : null,
+      el('details', { class: 'said', open: true }, el('summary', { text: 'What you said' }),
+        el('ol', {}, talk.notes.map(n => el('li', { text: n })))));
+  }
+
+  /* ── Step 3: his spoken answer ── */
+  function awaitReply() {
+    if (!alive() || !micAvailable()) return;
+    if (replyListen) replyListen.cancel();
+    listening.hidden = false;
+    listening.className = 'banner listen';
+    listening.onclick = null;
+    listening.textContent = '🎤 Listening… say "yes" to save, or what to change.';
+    beep();
+    replyListen = listen({
+      mode: 'reply',
+      onWords: text => { listening.textContent = '🎤 "' + text + '"'; },
+      onEnd: (text, why) => {
+        replyListen = null;
+        if (!alive()) return;
+        if (text) { listening.hidden = true; return handleReply(text); }
+        if (why === 'blocked' || why === 'failed') return askForTap();
+        listening.hidden = true;
+        if (why === 'nothing' && !talk.retried && handsFree()) {
+          talk.retried = true;
+          speakThenListen('Sorry, I didn\'t catch that. Say yes to save it, or tell me what to change.');
+        }
+      },
+    });
+  }
+
+  // Last resort if the phone won't start listening by itself: one big tap target.
+  function askForTap() {
+    listening.hidden = false;
+    listening.className = 'banner warn tap-target';
+    listening.textContent = '🎤 The phone needs a tap to listen. Tap here, then answer.';
+    listening.onclick = () => { primeAudio(); awaitReply(); };
+    speak('Tap the screen, then answer.');
+  }
+
+  function handleReply(text) {
+    vlog('he said: ' + text);
+    talk.retried = false;
+    if (isRepeat(text) && talk.proposal) return speakThenListen(talk.proposal.confirmation);
+    if (isYes(text) && talk.proposal && talk.proposal.action !== 'unclear') return save();
+    if (isCancel(text)) return discard();
+    if (isBareNo(text)) {
+      show('ok', 'What should I change?');
+      return handsFree() ? speakThenListen('Okay, what should I change?') : awaitReply();
+    }
+    talk.notes.push(text);
+    ask();
+  }
+
+  function save(raw) {
+    stopTalking();
+    if (replyListen) replyListen.cancel();
+    review.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    show('ok', 'Saving…');
+    server()
+      .withSuccessHandler(res => {
+        vlog('saved row ' + res.row);
+        writePref(draftKey, '');
+        const ok = res.status === 'OK';
+        const what = res.action === 'update' ? 'Change saved ✓' : 'Saved ✓';
+        state.flash = { row: res.row, status: res.status,
+          message: ok ? what : what + ', but check: ' + res.status.replace(/^Needs review: /, '') };
+        loadData(() => { goUp(docketRoute(res.docket)); speak(res.action === 'update' ? 'Change saved.' : 'Saved.'); });
+      })
+      .withFailureHandler(err => {
+        if (!alive()) return;
+        vlog('save failed: ' + err.message);
+        review.querySelectorAll('button').forEach(b => { b.disabled = false; });
+        show('error', 'Not saved (' + err.message + '). Nothing is lost: try again when you have signal.');
+        speak('Sorry, that didn\'t save. Try again when you have signal.');
+      })
+      .commitEntry(raw === true ? null : talk.proposal, talk.notes, scope);
+  }
+
+  function discard() {
+    stopTalking();
+    if (replyListen) replyListen.cancel();
+    writePref(draftKey, '');
+    goUp(parent);
+    speak('Okay, I won\'t save that.');
+  }
+
+  // Lets leaving the screen switch everything off.
+  talk.stopAll = () => { if (noteListen) noteListen.cancel(); if (replyListen) replyListen.cancel(); };
+
+  put(
+    el('div', { class: 'bar' },
+      el('button', { class: 'icon-btn', type: 'button', text: '‹ Back', onclick: () => goUp(parent) }),
+      el('span', { style: 'flex:1' }),
+      testButton,
+      hfButton),
+    el('h1', { text: title, style: 'margin:0 0 2px;font-size:24px' }),
+    el('p', { class: 'sub', style: 'margin-bottom:10px', text: sub }),
+    message,
+    compose,
+    review,
+    voiceLogPanel(),
+  );
+
+  // Hands-free: start listening straight away (this runs during the tap that opened the screen).
+  if (handsFree() && micAvailable()) listenForNote();
+}
+
+// Short answers that mean yes / cancel / just "no" / say it again.
+const isYes = t => t.length <= 40 && /^\s*(yes|yeah|yep|yup|yes please|correct|that'?s (right|correct|good)|right|save( it)?|sounds good|all good|good|perfect|ok(ay)?|confirm(ed)?|go ahead|do it)\b[\s\S]{0,18}$/i.test(t);
+const isCancel = t => /^\s*(cancel|discard|forget (it|that)|scrap (it|that)|delete (it|that)|never ?mind|don'?t save)\b/i.test(t);
+const isBareNo = t => /^\s*(no|nope|nah)[\s.!]*$/i.test(t);
+const isRepeat = t => t.length <= 40 && /^\s*(what\??|pardon|sorry\??|(can you )?(say|read) (that|it) again|repeat( that| it)?|again)[\s.!?]*$/i.test(t);
+
+
+/* ════════════════  View 4: edit one visit by hand  ════════════════ */
+const LONG_FIELDS = ['work_done', 'equipment', 'follow_up', 'notes', 'site'];
+function renderEdit(row) {
+  const v = state.visits.find(x => x.row === row);
+  if (!v) {
+    put(el('div', { class: 'bar' }, backButton('Dockets', '')),
+        el('p', { class: 'empty', text: 'That visit couldn\'t be found. It may have been changed in the sheet.' }));
+    return;
+  }
+  const parent = docketRoute(v.docket_number);
+  const fingerprint = { recorded_at: v.recorded_at, transcript: v.transcript };
+  const message = el('div', { hidden: true });
+  const show = (kind, text) => { message.hidden = false; message.className = 'banner ' + kind; message.textContent = text; };
+
+  // One input per editable column: date and time pickers where they fit, text otherwise.
+  const inputs = {};
+  const fieldsBox = el('div');
+  state.columns.filter(c => c.editable).forEach(c => {
+    const value = v[c.key];
+    if (c.key === 'reviewed') {
+      const box = el('input', { type: 'checkbox' });
+      box.checked = value === true;
+      inputs[c.key] = box;
+      fieldsBox.append(el('label', { class: 'check' }, box, 'Checked by the office'));
+      return;
+    }
+    let input;
+    if (LONG_FIELDS.includes(c.key)) input = el('textarea', { rows: 2 });
+    else if (c.key === 'job_date' && (!value || /^\d{4}-\d{2}-\d{2}$/.test(value))) input = el('input', { type: 'date' });
+    else if ((c.key === 'arrived' || c.key === 'departed') && (!value || /^\d{2}:\d{2}$/.test(value))) input = el('input', { type: 'time' });
+    else input = el('input', { type: 'text', inputmode: c.key === 'travel_km' ? 'decimal' : undefined });
+    input.value = value || '';
+    inputs[c.key] = input;
+    fieldsBox.append(el('label', { class: 'field' }, el('span', { text: c.header }), input));
+  });
+  const currentValues = () => Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.type === 'checkbox' ? i.checked : i.value.trim()]));
+  const original = JSON.stringify(currentValues());
+  const unsavedOk = () => JSON.stringify(currentValues()) === original || confirm('Leave without saving your changes?');
+
+  const save = el('button', { class: 'primary fab', type: 'button', text: 'Save changes', onclick: () => {
+    save.disabled = true; save.textContent = 'Saving…';
+    server()
+      .withSuccessHandler(res => {
+        state.flash = { row: res.row, status: 'OK', message: 'Changes saved ✓' };
+        loadData(() => goUp(docketRoute(res.docket)));
+      })
+      .withFailureHandler(err => {
+        save.disabled = false; save.textContent = 'Save changes';
+        show('error', 'Not saved (' + err.message + '). Your changes are still here, so try again.');
+        window.scrollTo(0, 0);
+      })
+      .updateVisit(v.row, fingerprint, currentValues());
+  } });
+
+  put(
+    el('div', { class: 'bar' }, el('button', { class: 'icon-btn', type: 'button', text: '‹ Cancel',
+      onclick: () => { if (unsavedOk()) goUp(parent); } })),
+    el('h1', { text: 'Edit visit', style: 'margin:0 0 4px;font-size:24px' }),
+    el('p', { class: 'sub', style: 'margin-bottom:10px' },
+      el('strong', { text: v.docket_number ? 'Docket ' + v.docket_number : 'No docket number' }), ' · ' + fmtDate(v.job_date, true)),
+    message,
+    el('button', { class: 'secondary wide', type: 'button', text: '🎤 Change by voice instead',
+      onclick: () => { if (unsavedOk()) go('change/' + v.row); } }),
+    el('h2', { text: 'Edit by hand' }),
+    fieldsBox,
+    v.transcript ? el('details', { class: 'said' }, el('summary', { text: 'What was said' }), el('p', { text: v.transcript })) : null,
+    save,
+  );
+}
+
+
+/* ════════════════  Voice log (for troubleshooting)  ════════════════
+   Every speaking and listening step is noted here, with the time, and shown at the bottom of the
+   voice screen under "Voice log". If the conversation gets stuck, a screenshot of it shows why. */
+const voiceLog = [];
+const t0 = Date.now();
+function vlog(msg) {
+  voiceLog.push(((Date.now() - t0) / 1000).toFixed(1) + 's  ' + msg);
+  if (voiceLog.length > 80) voiceLog.shift();
+  const box = document.getElementById('voiceLog');
+  if (box) box.textContent = voiceLog.slice().reverse().join('\n');
+}
+function voiceLogPanel() {
+  const pre = el('pre', { id: 'voiceLog', text: voiceLog.slice().reverse().join('\n') });
+  return el('details', { class: 'said voicelog' }, el('summary', { text: 'Voice log (for troubleshooting)' }), pre);
+}
+
+
+/* ════════════════  Talking back  ════════════════ */
+const handsFree = () => readPref('talkBack', 'on') === 'on' && 'speechSynthesis' in window;
+
+// The phone's voices load a moment after the page opens.
+let voices = [];
+function loadVoices() { try { voices = speechSynthesis.getVoices() || []; } catch (e) { voices = []; } }
+if ('speechSynthesis' in window) {
+  loadVoices();
+  try { speechSynthesis.addEventListener('voiceschanged', loadVoices); } catch (e) {}
+}
+
+// An installed voice for the phone's language, or failing that any English voice. Asking for a
+// language the phone has no voice for (e.g. en-NZ) can make some phones say nothing at all.
+function pickVoice() {
+  if (!voices.length) loadVoices();
+  const want = (navigator.language || 'en-US').toLowerCase().replace('_', '-');
+  const norm = v => (v.lang || '').toLowerCase().replace('_', '-');
+  return voices.find(v => norm(v) === want && v.localService)
+      || voices.find(v => norm(v) === want)
+      || voices.find(v => norm(v).startsWith(want.slice(0, 2)) && v.default)
+      || voices.find(v => norm(v).startsWith(want.slice(0, 2)))
+      || voices.find(v => v.default)
+      || null;
+}
+
+// Chrome only lets a page make sound after it's been tapped. Sound that comes later (the
+// read-back, the beep) is allowed if something was played during a tap, so every tap that starts
+// a conversation plays a silent word and wakes up the beep's sound player.
+let speechPrimed = false;
+let audioCtx = null;
+function primeAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) {}
+  if (speechPrimed || !handsFree()) return;
+  speechPrimed = true;
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
+}
+
+// A short beep that means "your turn to talk".
+function beep() {
+  try {
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25, audioCtx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.18);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.2);
+  } catch (e) {}
+}
+
+// Shows a note at the bottom of the screen when the phone couldn't talk.
+function speechProblem(text) {
+  vlog('talk-back problem: ' + text);
+  let note = document.getElementById('speechProblem');
+  if (!note) {
+    note = el('div', { id: 'speechProblem', class: 'banner warn toast', onclick: () => note.remove() });
+    document.body.append(note);
+  }
+  note.textContent = '🔇 ' + text + ' (tap to hide)';
+}
+
+// Reads text aloud (if Hands-free is on), then calls `then`. If something else is said, or
+// stopTalking() is called first, `then` never runs. `always` talks even with Hands-free off.
+let speechId = 0;
+function speak(text, then, always) {
+  const id = ++speechId;
+  let called = false;
+  const done = why => {
+    if (called || id !== speechId) return;
+    called = true;
+    if (why) vlog('speaking ended (' + why + ')');
+    if (then) then();
+  };
+  if (!text || !('speechSynthesis' in window) || !(always || handsFree())) return done();
+
+  const start = () => {
+    if (id !== speechId) return;
+    const u = new SpeechSynthesisUtterance(text);
+    const voice = pickVoice();
+    if (voice) { u.voice = voice; u.lang = voice.lang; }
+    let started = false;
+    u.onstart = () => { started = true; vlog('speaking: "' + text.slice(0, 50) + (text.length > 50 ? '…"' : '"')); };
+    u.onend = () => done('finished');
+    u.onerror = e => {
+      if (e.error !== 'interrupted' && e.error !== 'canceled') {
+        speechProblem(e.error === 'not-allowed'
+          ? 'The phone blocked talk back. Tap 🔊 Test, then try again.'
+          : 'Talk back couldn\'t play (' + e.error + ').');
+      }
+      done('error ' + e.error);
+    };
+    // If the phone never starts talking, say so on screen instead of failing silently.
+    setTimeout(() => {
+      if (started || called || id !== speechId) return;
+      speechSynthesis.resume();
+      speechProblem(voices.length
+        ? 'Talk back didn\'t start. Check the phone\'s media volume, then tap 🔊 Test.'
+        : 'This phone has no text-to-speech voice set up. See Settings → Accessibility → Text-to-speech.');
+    }, 3000);
+    setTimeout(() => done('timed out'), 4000 + text.length * 90); // some phones never report the end
+    speechSynthesis.speak(u);
+    speechSynthesis.resume(); // Chrome sometimes starts speech paused
+  };
+
+  // Chrome on Android drops speech that starts straight after cancel(), so only cancel when
+  // something is actually playing, and wait a moment before starting.
+  if (speechSynthesis.speaking || speechSynthesis.pending) {
+    speechSynthesis.cancel();
+    setTimeout(start, 250);
+  } else {
+    start();
+  }
+}
+
+// Runs `then` once the phone has really stopped talking, plus a short gap, so the mic doesn't
+// hear the end of the read-back and the speaker has let go before the mic starts.
+function afterSpeechEnds(then) {
+  const id = speechId;
+  const began = Date.now();
+  (function check() {
+    if (id !== speechId) return;
+    const busy = 'speechSynthesis' in window && (speechSynthesis.speaking || speechSynthesis.pending);
+    if (busy && Date.now() - began < 4000) return setTimeout(check, 150);
+    setTimeout(() => { if (id === speechId) then(); }, 450);
+  })();
+}
+
+// Stops any reading-out.
+function stopTalking() {
+  speechId++;
+  if ('speechSynthesis' in window && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel();
+}
+
+// The 🔊 Test button: talks straight away, from the tap, and reports what the phone has.
+function testSpeech() {
+  if (!('speechSynthesis' in window)) { speechProblem('This browser can\'t talk back. Try Chrome.'); return 'none'; }
+  loadVoices();
+  primeAudio();
+  const voice = pickVoice();
+  const old = document.getElementById('speechProblem'); if (old) old.remove();
+  speechPrimed = true;
+  speak('Talk back is working. You should hear this through the phone.', () => afterSpeechEnds(beep), true);
+  return voice ? voice.name + ' (' + voice.lang + ')' : (voices.length ? 'default voice' : 'no voices found');
+}
+
+
+/* ════════════════  Listening  ════════════════
+   listen() runs the phone's speech recogniser for one turn of the conversation:
+   - mode 'note':  keeps listening through pauses until he says "that's it", taps Done, or is
+                   quiet for NOTE_SILENCE_MS.
+   - mode 'reply': a short answer; finishes REPLY_PAUSE_MS after the last word, or gives up after
+                   REPLY_WAIT_MS with nothing said.
+   Phones end each listening session by themselves after a pause, and sometimes fail to start
+   one; listen() quietly starts another until the turn is over. It calls
+   onEnd(text, why) once, where why is 'done-phrase', 'silence', 'stopped', 'pause', 'nothing',
+   'blocked' (the phone refused), 'failed' (kept failing) or 'cancelled'. */
+const NOTE_SILENCE_MS = 9000;
+const REPLY_PAUSE_MS = 2200;
+const REPLY_WAIT_MS = 9000;
+const MAX_FAILURES = 4;
+const DONE_PHRASE = /[\s,.]*\b(that'?s it|that'?s all|end of note)[\s.!]*$/i;
+
+const speechAPI = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+const micAvailable = () => !!speechAPI();
+
+function listen(opts) {
+  const SR = speechAPI();
+  const h = {
+    on: true, kept: (opts.before || '').trim(), session: '', heard: false, why: null,
+    lastWords: Date.now(), startedAt: Date.now(), failures: 0, blocked: false, rec: null, ended: false,
+  };
+  vlog('listening for ' + (opts.mode === 'note' ? 'the note' : 'an answer'));
+
+  function startSession() {
+    if (!h.on) return;
+    const rec = new SR();
+    h.rec = rec; h.session = '';
+    let opened = false;
+    rec.lang = navigator.language || 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onstart = () => { opened = true; };
+    rec.onresult = e => {
+      const r = readResults(e);
+      const words = mergeSpeech(r.done, r.inProgress);
+      if (words) { h.heard = true; h.lastWords = Date.now(); h.failures = 0; }
+      if (opts.mode === 'note' && DONE_PHRASE.test(r.done)) {
+        h.session = r.done.replace(DONE_PHRASE, '');
+        opts.onWords(joinText(h.kept, h.session));
+        return finish('done-phrase');
+      }
+      h.session = r.done;
+      if (h.on) opts.onWords(joinText(h.kept, words));
+    };
+    rec.onerror = e => {
+      vlog('mic error: ' + e.error);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') h.blocked = true;
+      else if (e.error !== 'no-speech' && e.error !== 'aborted') h.failures++;
+    };
+    rec.onend = () => {
+      if (h.rec === rec) h.rec = null;
+      h.kept = joinText(h.kept, h.session); h.session = '';
+      if (!h.on) return deliver();
+      if (h.blocked) return finish('blocked');
+      if (h.failures >= MAX_FAILURES) return finish('failed');
+      setTimeout(startSession, h.failures ? 600 : 200);  // the phone stopped by itself: carry on
+    };
+    // If the phone never actually opens the mic, try again.
+    setTimeout(() => {
+      if (h.rec === rec && !opened && h.on) { vlog('mic didn\'t open, trying again'); h.failures++; try { rec.abort(); } catch (e) {} }
+    }, 3000);
+    try { rec.start(); }
+    catch (err) { vlog('mic start failed: ' + err.message); h.failures++; h.rec = null; setTimeout(() => rec.onend(), 300); }
+  }
+
+  // Checks the pause and silence limits.
+  const ticker = setInterval(() => {
+    if (!h.on) return;
+    const now = Date.now(), quiet = now - h.lastWords;
+    if (opts.mode === 'reply') {
+      if (!h.heard && now - h.startedAt > REPLY_WAIT_MS) finish('nothing');
+      else if (h.heard && quiet > REPLY_PAUSE_MS) finish('pause');
+    } else if (quiet > NOTE_SILENCE_MS) {
+      finish('silence');
+    }
+  }, 250);
+
+  function finish(why) {
+    if (!h.on) return;
+    h.on = false; h.why = why;
+    clearInterval(ticker);
+    vlog('stopped listening (' + why + ')');
+    if (h.rec) { try { h.rec.stop(); } catch (e) { deliver(); } } else deliver();
+    setTimeout(deliver, 1500); // in case the phone never confirms it has stopped
+  }
+
+  function deliver() {
+    if (h.ended) return;
+    h.ended = true;
+    if (h.why !== 'cancelled') opts.onEnd(h.kept.trim(), h.why);
+  }
+
+  startSession();
+  return {
+    stop: () => finish('stopped'),
+    cancel: () => { finish('cancelled'); if (h.rec) try { h.rec.abort(); } catch (e) {} },
+  };
+}
+
+// Joins two bits of text with a space. Android repeats earlier words in each new result,
+// so if the new bit already starts with the old one, it replaces it instead of doubling up.
+function mergeSpeech(a, b) {
+  const A = (a || '').trim(), B = (b || '').trim();
+  if (!A) return B;
+  if (!B) return A;
+  if (B.toLowerCase().startsWith(A.toLowerCase())) return B;
+  if (A.toLowerCase().endsWith(B.toLowerCase())) return A;
+  return A + ' ' + B;
+}
+const joinText = (a, b) => [(a || '').trim(), (b || '').trim()].filter(Boolean).join(' ');
+
+// Reads a recognition event into { done, inProgress } text.
+function readResults(e) {
+  let done = '', inProgress = '';
+  for (let i = 0; i < e.results.length; i++) {
+    const words = e.results[i][0].transcript;
+    if (e.results[i].isFinal) done = mergeSpeech(done, words); else inProgress = mergeSpeech(inProgress, words);
+  }
+  return { done, inProgress };
+}
+
+
+/* ════════════════  Talking to the Google Sheet  ════════════════
+   The sheet is reached through the Apps Script web-app link (ending in /exec). The link and the
+   passcode are typed in once on the Connect screen and remembered on this phone.
+   server().withSuccessHandler(fn).withFailureHandler(fn).getAppData() sends one request. */
+const connection = () => {
+  const url = readPref('apiUrl', ''), passcode = readPref('passcode', '');
+  return url && passcode ? { url, passcode } : null;
+};
+
+function server(ok, fail) {
+  const call = action => (...args) => {
+    const conn = connection();
+    const failed = message => { const err = new Error(message); vlog('server: ' + message); if (fail) fail(err); };
+    if (!conn) return failed('Not connected yet.');
+    fetch(conn.url, { method: 'POST', body: JSON.stringify({ passcode: conn.passcode, action, args }) })
+      .then(res => res.text())
+      .then(text => {
+        let reply;
+        try { reply = JSON.parse(text); } catch (e) { return failed('The app link didn\'t answer properly. Check it\'s the /exec link and set to "Anyone".'); }
+        if (!reply.ok) {
+          if (reply.code === 'passcode' || reply.code === 'setup') writePref('connectProblem', reply.error);
+          return failed(reply.error);
+        }
+        if (ok) ok(reply.result);
+      })
+      .catch(() => failed('No connection. Check your signal and try again.'));
+  };
+  return {
+    withSuccessHandler: fn => server(fn, fail),
+    withFailureHandler: fn => server(ok, fn),
+    getAppData: call('getAppData'),
+    proposeEntry: call('proposeEntry'),
+    commitEntry: call('commitEntry'),
+    updateVisit: call('updateVisit'),
+  };
+}
+
+/* ── The Connect screen (first use, or after a wrong passcode) ── */
+function renderConnect() {
+  const problem = readPref('connectProblem', '');
+  const url = el('input', { type: 'url', placeholder: 'https://script.google.com/macros/s/…/exec', value: readPref('apiUrl', '') });
+  const code = el('input', { type: 'password', placeholder: 'Passcode', value: readPref('passcode', '') });
+  const message = el('div', { class: 'banner error', hidden: !problem, text: problem });
+  const connect = el('button', { class: 'primary', type: 'button', text: 'Connect', onclick: () => {
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url.value.trim())) {
+      message.hidden = false; message.textContent = 'The app link should start with https://script.google.com/ and end with /exec.'; return;
+    }
+    writePref('apiUrl', url.value.trim()); writePref('passcode', code.value.trim()); writePref('connectProblem', '');
+    connect.disabled = true; connect.textContent = 'Connecting…';
+    server(data => {
+      Object.assign(state, data, { loaded: true, error: '' });
+      go('', true);
+    }, err => {
+      connect.disabled = false; connect.textContent = 'Connect';
+      message.hidden = false; message.textContent = err.message;
+    }).getAppData();
+  } });
+  put(
+    el('div', { class: 'bar' }, el('h1', { text: 'Connect' })),
+    el('p', { class: 'hint', text: 'Paste the Apps Script web-app link and type the passcode. You only need to do this once on this phone.' }),
+    message,
+    el('label', { class: 'field' }, el('span', { text: 'App link (ends in /exec)' }), url),
+    el('label', { class: 'field' }, el('span', { text: 'Passcode' }), code),
+    connect,
+  );
+}
+const needsConnecting = () => !connection() || !!readPref('connectProblem', '');
+
+
+/* ════════════════  Loading data from the sheet  ════════════════ */
+function loadData(then) {
+  if (needsConnecting()) { if (currentRoute !== 'connect') go('connect', true); return; }
+  server()
+    .withSuccessHandler(data => {
+      const firstLoad = !state.loaded;
+      Object.assign(state, data, { loaded: true, error: '' });
+      if (then) then(); else if (firstLoad || !isFormScreen(currentRoute)) render(currentRoute);
+    })
+    .withFailureHandler(err => {
+      if (needsConnecting()) return go('connect', true);
+      state.error = 'Couldn\'t load dockets: ' + err.message;
+      if (then) then(); else if (!isFormScreen(currentRoute)) render(currentRoute);
+    })
+    .getAppData();
+}
+
+// Start: open whatever page the link points at, then fetch the data.
+window.addEventListener('popstate', e => render((e.state && e.state.route) || location.hash.slice(1)));
+render(needsConnecting() ? 'connect' : location.hash.slice(1));
+loadData();
+// Refresh quietly when coming back to the app (e.g. after editing the sheet).
+// Switch the mic off when the app is put away.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (currentTalk && currentTalk.stopAll) currentTalk.stopAll(); stopTalking(); } else loadData();
+});
+</script>
+</body>
+</html>
