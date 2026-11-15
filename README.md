@@ -2,14 +2,21 @@
 
 A phone app for logging survey jobs by voice. You dictate a note, Claude sorts it into columns (docket #, date, client, site, arrival and departure times, work done and more), and it's saved as a new row in a Google Sheet.
 
-**How it's organised:** each row in the sheet is one *visit*. All the visits with the same Docket # make up one *docket*.
+**How it's organised:** the Google Sheet has three tabs.
+- **Visits:** one row per visit to a job, the main record. All the visits with the same Docket # make up one *docket*.
+- **Dockets:** one row per docket, with its client and **site address**. Added automatically the first time a docket number is used. New visits to that docket default to this address.
+- **Settings:** the **home address** that every trip starts and ends at, unless you say otherwise.
+
+**Driving distances** are worked out with Google Maps for each visit: start address → site → end address. These default to home → the docket's address → home. If you say *"came straight from the Olsen job"* or *"went on to the Patel job"*, that visit's start or end changes to that job's address. If you say the km yourself (*"it was 50 k"*), your number is used and marked **Entered** in the **Km from** column, instead of **Google Maps**. The read-back tells you the distance, e.g. *"Driving there and back from home is 44 kilometres."*
+
+What's on the phone:
 - **Dockets screen:** a card for every docket showing the docket #, client and address. You can search, and sort by latest visit, docket # or client. Notes saved without a docket number are grouped at the top so they get sorted out.
-- **Docket screen:** tap a card to see its visits, newest first, with total visits, hours and km. Tap a visit to see everything recorded, including what was said and a link to its row in the sheet.
+- **Docket screen:** tap a card to see its visits, newest first, with total visits, hours and km, and each visit's route (🚗 Home → 9 Rimu Road → Home · 44.2 km). **✏️ Edit docket client / address** changes the docket's own details. Tap a visit to see everything recorded, including what was said and a link to its row in the sheet.
 - **Talking to it:** **🎤 New note or change** (main screen) and **🎤 Add a visit or change** (docket screen) open the same voice conversation. Say what you did, or what to change on a visit you've already recorded ("on Tuesday's Olsen visit I actually left at noon"). Claude works out whether it's a new visit or a change, and which visit. It then shows (and, with **🔊 Hands-free** on, reads out) what it will save, mentions any required details that are missing, and waits. Say **"yes"** to save, say a correction, or say **"cancel"**. Nothing is saved until you confirm.
 - **Saying "same as last time" is fine.** Phrases like "same location as the previous visit" are looked up in the earlier visits, so the real address goes in the sheet, not the phrase.
 - **Editing by hand:** **✏️ Edit this visit** lets the office change any field and tick **Checked by the office**. **🎤 Change by voice instead** opens the conversation for just that visit.
 - **Changes are tracked:** a voice change adds a dated line to the visit's **Raw transcript**. If the visit had already been ticked as reviewed, it's unticked and marked "Changed after it was reviewed".
-- **Required details** (the app tells you when one is missing) are set with `required: true` in the `COLUMNS` list at the top of `Code.gs`. They are: docket #, job date, client, site, arrived, departed, work done and travel km.
+- **Required details** (the app tells you when one is missing) are set with `required: true` in the `COLUMNS` list at the top of `Code.gs`. They are: docket #, job date, client, site, arrived, departed, work done and travel km. Travel km is worked out automatically, so it's only "missing" if Google Maps can't find the address.
 
 - `apps-script/Code.gs`: the back end, pasted into the Google Sheet's Apps Script. Edit the `COLUMNS` list at the top to change what gets recorded.
 - `docs/index.html`: the phone app, published as a web page with GitHub Pages. It talks to the Apps Script back end using a passcode.
@@ -42,8 +49,10 @@ A phone app for logging survey jobs by voice. You dictate a note, Claude sorts i
 1. Go back to the **Editor** (`< >` icon).
 2. In the function dropdown at the top, pick **setupSheet** and click **Run**.
 3. Google asks for permission. Click **Review permissions**, choose your account, then **Advanced → Go to Docket Recorder (unsafe) → Allow**. ("Unsafe" just means Google hasn't reviewed the app. It's your own script running in your own account.)
-4. Back in the Sheet, a **Dockets** tab now has a header row.
-5. Pick **testPropose** in the dropdown and click **Run**. The **Execution log** should show Claude's proposal for a sample note, including a `confirmation` sentence. Nothing is saved.
+4. Back in the Sheet, there are now **Visits**, **Dockets** and **Settings** tabs with header rows. (If you set the app up before these tabs existed, running **setupSheet** renames the old visits tab and adds the new ones. Nothing is deleted.)
+5. In the **Settings** tab, type your home address next to **Home address**. You can also do this later in the app under ⚙ **Settings**, which checks it with Google Maps.
+6. Pick **testPropose** in the dropdown and click **Run**. The **Execution log** should show Claude's proposal for a sample note, including a `confirmation` sentence. Nothing is saved.
+7. Optional: if Google Maps keeps picking the wrong town for addresses, set `MAPS_REGION` near the top of Code.gs to your two-letter country code (e.g. `'nz'`).
 
 ### 5. Open the back end to the phone app
 1. Click **Deploy → New deployment**. Click ⚙️ next to "Select type" and choose **Web app**.
@@ -59,7 +68,7 @@ A phone app for logging survey jobs by voice. You dictate a note, Claude sorts i
 
 ### 7. Put it on the phone
 1. Open the GitHub Pages address on the phone in **Chrome**.
-2. On the **Connect** screen, paste the Web app URL from step 5 and type the passcode from step 3, then tap **Connect**. The phone remembers both. (The ⚙ button on the Dockets screen opens this again.)
+2. On the **Connect** screen, paste the Web app URL from step 5 and type the passcode from step 3, then tap **Connect**. The phone remembers both. (⚙ **Settings → Change connection** opens this again.)
 3. In Chrome, tap **⋮ → Add to Home screen**. It now opens like an app.
 4. The first time you tap 🎤, Chrome asks to use the microphone: tap **Allow**.
 

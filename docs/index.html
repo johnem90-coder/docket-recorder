@@ -182,7 +182,7 @@
 const memoryPrefs = {};
 const NONE = '_none';            // route key for visits with no docket number
 const state = {
-  visits: [], columns: [], sheetUrl: '',
+  visits: [], dockets: [], settings: {}, columns: [], sheetUrl: '',
   loaded: false, error: '',
   sort: readPref('docketSort', 'date'),
   query: '',
@@ -238,7 +238,33 @@ function getDockets() {
     if ((v.job_date || '') > d.lastDate) d.lastDate = v.job_date;
     if (needsCheck(v)) d.toCheck++;
   });
+  // The Dockets tab holds each docket's own client and address; those win.
+  state.dockets.forEach(m => {
+    const d = map[m.docket_number] || (map[m.docket_number] =
+      { key: m.docket_number, number: m.docket_number, client: '', site: '', visits: [], lastDate: '', toCheck: 0 });
+    if (m.client) d.client = m.client;
+    if (m.site) d.site = m.site;
+  });
   return Object.values(map);
+}
+
+/* ════════════════  Addresses and distances  ════════════════ */
+const homeAddress = () => state.settings.home_address || '';
+// "Home", or the first part of an address ("48 Kowhai Lane").
+const placeLabel = a => !a ? '' : a === homeAddress() ? 'Home' : a.split(',')[0];
+// How a field's value is shown on screen.
+function showValue(key, value) {
+  value = String(value === undefined || value === null ? '' : value);
+  if ((key === 'start_address' || key === 'end_address') && value && value === homeAddress()) return 'Home';
+  if (key === 'travel_km' && value) return value + ' km';
+  return value;
+}
+// "🚗 Home → 9 Rimu Road → Home · 44.2 km"
+function routeLine(v) {
+  if (!v.site) return '';
+  const stops = [placeLabel(v.start_address) || 'Home', placeLabel(v.site), placeLabel(v.end_address) || 'Home'];
+  const km = v.travel_km ? ' · ' + v.travel_km + ' km' + (v.km_source === 'Entered' ? ' (entered)' : '') : ' · distance unknown';
+  return '🚗 ' + stops.join(' → ') + km;
 }
 
 function sortDockets(list) {
@@ -277,7 +303,7 @@ const backButton = (label, route) => el('button', { class: 'icon-btn', type: 'bu
 
 let currentRoute = '';
 // Screens with unsaved typing aren't redrawn by background refreshes.
-const isFormScreen = route => /^(record|edit|change)\//.test(route);
+const isFormScreen = route => /^(record|edit|change|docketedit|settings)\b/.test(route);
 function render(route) {
   currentRoute = route || '';
   // Leaving a screen ends any conversation on it: stop listening and talking.
@@ -296,6 +322,8 @@ function render(route) {
       el('button', { class: 'secondary wide', type: 'button', text: '⚙ Connection settings', onclick: () => go('connect') }));
   }
   if (view === 'docket') return renderDocket(key);
+  if (view === 'docketedit') return renderDocketEdit(key);
+  if (view === 'settings') return renderSettings();
   if (view === 'edit') return renderEdit(Number(key));
   if (view === 'change') return renderTalk({ type: 'row', row: Number(key) });
   renderList();
@@ -331,7 +359,9 @@ function renderList() {
     el('div', { class: 'bar' },
       el('h1', { text: 'Dockets' }),
       el('button', { class: 'icon-btn', type: 'button', text: '↻ Refresh', onclick: () => loadData() }),
-      el('button', { class: 'icon-btn', type: 'button', text: '⚙', 'aria-label': 'Connection settings', onclick: () => go('connect') })),
+      el('button', { class: 'icon-btn', type: 'button', text: '⚙', 'aria-label': 'Settings', onclick: () => go('settings') })),
+    homeAddress() ? null : el('button', { class: 'banner warn tap-target', type: 'button', style: 'width:100%;margin-bottom:10px',
+      text: '🏠 Set your home address so driving distances can be worked out. Tap here.', onclick: () => go('settings') }),
     el('input', {
       type: 'search', placeholder: 'Search docket, client, address, work…', value: state.query,
       oninput: e => { state.query = e.target.value; drawCards(); },
@@ -355,7 +385,7 @@ function docketCard(d) {
       : [el('div', { class: 'client', text: d.client || 'No client name' }),
          el('div', { class: 'addr', text: d.site || 'No address' })],
     el('div', { class: 'meta' },
-      'Last visit ' + fmtDate(d.lastDate),
+      d.lastDate ? 'Last visit ' + fmtDate(d.lastDate) : 'No visits yet',
       d.toCheck ? el('span', { class: 'flag', text: ' · ⚠ ' + d.toCheck + ' to check' }) : null),
   );
 }
@@ -379,7 +409,9 @@ function renderDocket(key) {
       text: flash.message || (flash.status === 'OK' ? 'Saved ✓' : 'Saved ✓, but check: ' + flash.status.replace(/^Needs review: /, '')) }) : null,
     el('h1', { text: docketLabel(d), style: 'margin:0 0 4px;font-size:24px' }),
     d.key !== NONE ? [el('p', { class: 'sub' }, el('strong', { text: d.client || 'No client name' })),
-                      el('p', { class: 'sub', text: d.site || 'No address' })] : null,
+                      el('p', { class: 'sub', text: '📍 ' + (d.site || 'No site address yet') }),
+                      el('button', { class: 'icon-btn', type: 'button', style: 'padding-left:0',
+                        text: '✏️ Edit docket client / address', onclick: () => go('docketedit/' + encodeURIComponent(d.number)) })] : null,
     el('div', { class: 'stats' },
       el('div', { class: 'stat' }, el('b', { text: visits.length }), el('small', { text: 'visits' })),
       el('div', { class: 'stat' }, el('b', { text: round(hours) }), el('small', { text: 'hours on site' })),
@@ -401,12 +433,13 @@ function visitCard(v, isNew) {
   const shownAbove = ['job_date', 'work_done', 'reviewed', 'status', 'docket_number'];
   const details = state.columns
     .filter(c => shownAbove.indexOf(c.key) === -1 && v[c.key] !== '' && v[c.key] !== undefined)
-    .map(c => [el('dt', { text: c.key === 'transcript' ? 'What was said' : c.header }), el('dd', { text: String(v[c.key]) })]);
+    .map(c => [el('dt', { text: c.key === 'transcript' ? 'What was said' : c.header }), el('dd', { text: showValue(c.key, v[c.key]) })]);
 
   return el('details', { class: 'visit' + (isNew ? ' new' : ''), open: isNew },
     el('summary', {},
       el('div', { class: 'vdate', text: fmtDate(v.job_date, true) }),
       el('div', { class: 'vtimes', text: times }),
+      routeLine(v) ? el('div', { class: 'vtimes', text: routeLine(v) }) : null,
       v.work_done ? el('div', { class: 'vwork', text: v.work_done }) : null,
       v.follow_up ? el('div', { class: 'vtimes', text: 'Follow-up: ' + v.follow_up }) : null,
       chip),
@@ -417,6 +450,71 @@ function visitCard(v, isNew) {
   );
 }
 const round = n => Math.round(n * 100) / 100;
+
+/* ════════════════  Edit a docket's client and site address  ════════════════ */
+function renderDocketEdit(number) {
+  const d = getDockets().find(x => x.number === number) || { client: '', site: '' };
+  const client = el('input', { type: 'text', value: d.client });
+  const site = el('textarea', { rows: 2 }); site.value = d.site;
+  const message = el('div', { hidden: true });
+  const save = el('button', { class: 'primary', type: 'button', text: 'Save docket', onclick: () => {
+    save.disabled = true; save.textContent = 'Saving…';
+    server()
+      .withSuccessHandler(() => {
+        state.flash = { status: 'OK', message: 'Docket saved ✓ New visits will use this address.' };
+        loadData(() => goUp(docketRoute(number)));
+      })
+      .withFailureHandler(err => {
+        save.disabled = false; save.textContent = 'Save docket';
+        message.hidden = false; message.className = 'banner error'; message.textContent = 'Not saved (' + err.message + ').';
+      })
+      .saveDocket(number, { client: client.value, site: site.value });
+  } });
+  put(
+    el('div', { class: 'bar' }, backButton('Docket ' + number, docketRoute(number))),
+    el('h1', { text: 'Docket ' + number, style: 'margin:0 0 4px;font-size:24px' }),
+    el('p', { class: 'hint', text: 'New visits to this docket use this client and site address. Visits already recorded keep theirs; edit a visit to change it.' }),
+    message,
+    el('label', { class: 'field' }, el('span', { text: 'Client' }), client),
+    el('label', { class: 'field' }, el('span', { text: 'Site address (as you\'d type it into Google Maps)' }), site),
+    save,
+  );
+}
+
+/* ════════════════  Settings: home address and connection  ════════════════ */
+function renderSettings() {
+  const home = el('textarea', { rows: 2, placeholder: 'e.g. 12 Example Street, Town' });
+  home.value = homeAddress();
+  const message = el('div', { hidden: true });
+  const show = (kind, text) => { message.hidden = false; message.className = 'banner ' + kind; message.textContent = text; };
+  const save = el('button', { class: 'primary', type: 'button', text: 'Save home address', onclick: () => {
+    save.disabled = true; save.textContent = 'Checking with Google Maps…';
+    server()
+      .withSuccessHandler(res => {
+        save.disabled = false; save.textContent = 'Save home address';
+        state.settings.home_address = res.home_address;
+        home.value = res.home_address;
+        show('ok', res.home_address ? 'Saved ✓ Google Maps found: ' + res.home_address : 'Home address cleared.');
+      })
+      .withFailureHandler(err => {
+        save.disabled = false; save.textContent = 'Save home address';
+        show('error', err.message);
+      })
+      .saveSettings({ home_address: home.value });
+  } });
+  put(
+    el('div', { class: 'bar' }, backButton('Dockets', '')),
+    el('h1', { text: 'Settings', style: 'margin:0 0 10px;font-size:24px' }),
+    message,
+    el('h2', { text: 'Home address' }),
+    el('p', { class: 'hint', text: 'Trips start and end here unless you say otherwise, and driving distances are worked out from it with Google Maps.' }),
+    el('label', { class: 'field' }, el('span', { text: 'Home address' }), home),
+    save,
+    el('h2', { text: 'Connection' }),
+    el('p', { class: 'hint', text: 'The Apps Script link and passcode this phone uses.' }),
+    el('button', { class: 'secondary wide', type: 'button', text: 'Change connection', onclick: () => go('connect') }),
+  );
+}
 
 /* ════════════════  View 3: the voice conversation  ════════════════
    With Hands-free on, everything after the first tap is spoken:
@@ -566,12 +664,13 @@ function renderTalk(scope) {
       heading = 'Change to ' + (p.target.docket ? 'docket ' + p.target.docket : 'visit') + ' · ' + fmtDate(p.target.job_date, true);
       body = p.changes.length
         ? el('dl', {}, p.changes.map(c => [el('dt', { text: c.label }),
-            el('dd', {}, el('span', { class: 'from', text: c.from || '(blank)' }), ' → ', el('strong', { text: c.to || '(blank)' }))]))
+            el('dd', {}, el('span', { class: 'from', text: showValue(c.key, c.from) || '(blank)' }), ' → ',
+              el('strong', { text: showValue(c.key, c.to) || '(blank)' }))]))
         : el('p', { class: 'hint', text: 'No changes yet.' });
     } else if (p.action === 'new') {
       heading = 'New visit · ' + (p.docket ? 'Docket ' + p.docket : 'no docket number');
       const shown = state.columns.filter(c => p.fields[c.key]);
-      body = el('dl', {}, shown.map(c => [el('dt', { text: c.header }), el('dd', { text: p.fields[c.key] })]),
+      body = el('dl', {}, shown.map(c => [el('dt', { text: c.header }), el('dd', { text: showValue(c.key, p.fields[c.key]) })]),
         p.hours !== '' ? [el('dt', { text: 'Hours on site' }), el('dd', { text: String(p.hours) })] : null);
     } else {
       heading = 'Not sure yet';
@@ -724,7 +823,7 @@ const isRepeat = t => t.length <= 40 && /^\s*(what\??|pardon|sorry\??|(can you )
 
 
 /* ════════════════  View 4: edit one visit by hand  ════════════════ */
-const LONG_FIELDS = ['work_done', 'equipment', 'follow_up', 'notes', 'site'];
+const LONG_FIELDS = ['work_done', 'equipment', 'follow_up', 'notes', 'site', 'start_address', 'end_address'];
 function renderEdit(row) {
   const v = state.visits.find(x => x.row === row);
   if (!v) {
@@ -788,6 +887,8 @@ function renderEdit(row) {
       onclick: () => { if (unsavedOk()) go('change/' + v.row); } }),
     el('h2', { text: 'Edit by hand' }),
     fieldsBox,
+    el('p', { class: 'hint', text: 'Travel km is worked out from Google Maps (start → site → end) when you change an address. ' +
+      'Type your own number to override it, or clear it to recalculate.' }),
     v.transcript ? el('details', { class: 'said' }, el('summary', { text: 'What was said' }), el('p', { text: v.transcript })) : null,
     save,
   );
@@ -1123,6 +1224,8 @@ function server(ok, fail, tryConn) {
     proposeEntry: call('proposeEntry'),
     commitEntry: call('commitEntry'),
     updateVisit: call('updateVisit'),
+    saveDocket: call('saveDocket'),
+    saveSettings: call('saveSettings'),
   };
 }
 

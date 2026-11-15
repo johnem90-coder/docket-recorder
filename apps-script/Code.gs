@@ -4,7 +4,12 @@
  * The surveyor talks to the app. Claude works out whether he's describing a NEW visit to a
  * job or a CHANGE to a visit already recorded, and proposes the record. The app reads the
  * proposal back to him (or shows it), he confirms or corrects it, and only then is it saved.
- * Each row of the "Dockets" tab is one visit; all rows with the same Docket # make a docket.
+ *
+ * The Google Sheet has three tabs:
+ *   Visits    one row per visit to a job (the main record)
+ *   Dockets   one row per docket: its client and site address (new visits default to these)
+ *   Settings  the home address that trips start and end at
+ * Driving distances (start → site → end) come from Google Maps unless he says the km himself.
  *
  * This file is the back end. The phone app itself is docs/index.html, hosted on GitHub Pages;
  * it reaches this script through doPost() below, protected by a passcode.
@@ -17,17 +22,23 @@
  *   - `required: true` means the app tells him when that detail is missing.
  *   - Reorder columns: move the lines up or down.
  *  After changing columns, run setupSheet() again so the header row is rewritten.
- *  (Keep docket_number, client, site, job_date, arrived and departed: the app uses them.)
+ *  (Keep the docket, date, client, site, address, time and km columns: the app uses them.)
  * ───────────────────────────────────────────────────────────────────────────────
  */
 
 // Which Claude model reads the notes. Change this one line to switch models.
 const MODEL = 'claude-sonnet-5-5';
 
-// Name of the tab the visits are written to.
-const SHEET_NAME = 'Dockets';
+// Tab names.
+const VISITS_TAB = 'Visits';
+const DOCKETS_TAB = 'Dockets';
+const SETTINGS_TAB = 'Settings';
 
-// The columns of the sheet, left to right. Each row is one visit to one docket.
+// Optional: a two-letter country code (e.g. 'nz', 'au', 'gb') to help Google Maps pick the
+// right place when an address is ambiguous. Leave empty to let Google decide.
+const MAPS_REGION = '';
+
+// The columns of the Visits tab, left to right. Each row is one visit to one docket.
 // Columns WITH an `ask` are filled in by Claude; the others by this script.
 const COLUMNS = [
   { key: 'recorded_at',   header: 'Recorded at' },
@@ -37,8 +48,12 @@ const COLUMNS = [
     ask: 'Date the work was done, as YYYY-MM-DD. Work out words like "today" or "yesterday" from the date you are given. If no date is mentioned, use today.' },
   { key: 'client',        header: 'Client', required: true,
     ask: 'Client or customer name. Empty if not mentioned.' },
-  { key: 'site',          header: 'Site / address', required: true,
-    ask: 'Site name, address, road or property description. Empty if not mentioned.' },
+  { key: 'site',          header: 'Site address', required: true,
+    ask: 'Address of the job site he drove to for this visit. Empty if not mentioned (the docket\'s address is used).' },
+  { key: 'start_address', header: 'Start address',
+    ask: 'Where he drove from to get to this visit, ONLY if he says it wasn\'t home, e.g. "came straight from the Olsen job" (use that job\'s site address). Empty means he started from home.' },
+  { key: 'end_address',   header: 'End address',
+    ask: 'Where he drove to after this visit, ONLY if he says it wasn\'t home, e.g. "went on to the Patel job" (use that job\'s site address). Empty means he went home.' },
   { key: 'arrived',       header: 'Arrived', required: true,
     ask: 'Time he arrived on site, as 24-hour HH:mm (e.g. "quarter past nine" → "09:15"). Empty if not mentioned.' },
   { key: 'departed',      header: 'Departed', required: true,
@@ -48,8 +63,9 @@ const COLUMNS = [
     ask: 'A short, clear summary of the work done on site, in his words where possible. Use "; " between separate tasks.' },
   { key: 'equipment',     header: 'Equipment / materials',
     ask: 'Equipment used or materials used/left on site (e.g. "GPS rover; 4 pegs"). Empty if not mentioned.' },
-  { key: 'travel_km',     header: 'Travel km', required: true,
-    ask: 'Kilometres driven for this job, digits only (e.g. "42"). Empty if not mentioned.' },
+  { key: 'travel_km',     header: 'Travel km', required: true, auto: true,
+    ask: 'Kilometres driven, digits only, ONLY if he says the distance himself (e.g. "it was 42 k"). Otherwise empty: the app works it out from Google Maps.' },
+  { key: 'km_source',     header: 'Km from' },
   { key: 'follow_up',     header: 'Follow-up needed',
     ask: 'Anything that still needs doing, a return visit, or something to tell the office/client. Empty if none.' },
   { key: 'notes',         header: 'Other notes',
@@ -59,12 +75,26 @@ const COLUMNS = [
   { key: 'reviewed',      header: 'Reviewed ✓' },
 ];
 
+// The columns of the Dockets tab: one row per docket.
+const DOCKET_COLUMNS = [
+  { key: 'docket_number', header: 'Docket #' },
+  { key: 'client',        header: 'Client' },
+  { key: 'site',          header: 'Site address' },
+  { key: 'created',       header: 'Created' },
+];
+
+// The Settings tab: one row per setting (label in column A, value in column B).
+const SETTINGS = [
+  { key: 'home_address', label: 'Home address' },
+];
+
 // The fields Claude fills in (every column that has an `ask`).
 const AI_COLUMNS = COLUMNS.filter(function (c) { return c.ask; });
 const AI_KEYS = AI_COLUMNS.map(function (c) { return c.key; });
+const ROUTE_KEYS = ['start_address', 'site', 'end_address'];
 
 // Columns that can be changed by hand on the phone's Edit screen: everything Claude fills in,
-// plus the office's Reviewed tick. (Hours are re-worked out from the times on save.)
+// plus the office's Reviewed tick. (Hours and km are re-worked out on save.)
 const EDITABLE_KEYS = AI_KEYS.concat(['reviewed']);
 
 
@@ -72,30 +102,40 @@ const EDITABLE_KEYS = AI_KEYS.concat(['reviewed']);
 
 /**
  * Run this once from the Apps Script editor (and again after changing COLUMNS).
- * Creates the "Dockets" tab if needed and writes a tidy header row.
+ * Creates the Visits, Dockets and Settings tabs if needed and writes tidy header rows.
+ * (A tab called "Dockets" from an earlier version that holds visits is renamed to "Visits".)
  */
 function setupSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME, 0);
 
-  const headers = COLUMNS.map(function (c) { return c.header; });
-  sheet.getRange(1, 1, 1, headers.length)
-    .setValues([headers])
-    .setFontWeight('bold')
-    .setBackground('#e8eef7')
-    .setWrap(true);
-  sheet.setFrozenRows(1);
-
-  // Keep docket numbers as text so leading zeros like "0042" survive.
-  sheet.getRange(2, colIndex('docket_number'), sheet.getMaxRows() - 1, 1).setNumberFormat('@');
-
-  // Sensible widths: wide for the long text columns, narrow for the rest.
+  let visits = ss.getSheetByName(VISITS_TAB);
+  const old = ss.getSheetByName(DOCKETS_TAB);
+  if (!visits && old && old.getRange(1, 1).getValue() === 'Recorded at') { old.setName(VISITS_TAB); visits = old; }
+  visits = visits || ss.insertSheet(VISITS_TAB, 0);
+  writeHeader(visits, COLUMNS.map(function (c) { return c.header; }));
+  visits.getRange(2, colIndex('docket_number'), visits.getMaxRows() - 1, 1).setNumberFormat('@');
   COLUMNS.forEach(function (c, i) {
-    const wide = ['work_done', 'transcript', 'follow_up', 'notes', 'site'].indexOf(c.key) !== -1;
-    sheet.setColumnWidth(i + 1, wide ? 260 : 110);
+    const wide = ['work_done', 'transcript', 'follow_up', 'notes', 'site', 'start_address', 'end_address'].indexOf(c.key) !== -1;
+    visits.setColumnWidth(i + 1, wide ? 240 : 105);
   });
 
-  Logger.log('Sheet "%s" is ready with %s columns.', SHEET_NAME, headers.length);
+  const dockets = ss.getSheetByName(DOCKETS_TAB) || ss.insertSheet(DOCKETS_TAB, 1);
+  writeHeader(dockets, DOCKET_COLUMNS.map(function (c) { return c.header; }));
+  dockets.getRange(2, 1, dockets.getMaxRows() - 1, 1).setNumberFormat('@');
+  dockets.setColumnWidth(1, 105); dockets.setColumnWidth(2, 200); dockets.setColumnWidth(3, 300); dockets.setColumnWidth(4, 140);
+
+  const settings = ss.getSheetByName(SETTINGS_TAB) || ss.insertSheet(SETTINGS_TAB, 2);
+  writeHeader(settings, ['Setting', 'Value']);
+  SETTINGS.forEach(function (s, i) { settings.getRange(i + 2, 1).setValue(s.label).setFontWeight('bold'); });
+  settings.setColumnWidth(1, 160); settings.setColumnWidth(2, 360);
+
+  Logger.log('Tabs ready: %s, %s, %s. Put the home address in the Settings tab (or in the app).', VISITS_TAB, DOCKETS_TAB, SETTINGS_TAB);
+}
+
+function writeHeader(sheet, headers) {
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+    .setFontWeight('bold').setBackground('#e8eef7').setWrap(true);
+  sheet.setFrozenRows(1);
 }
 
 
@@ -114,6 +154,8 @@ const API_ACTIONS = {
   proposeEntry: proposeEntry,
   commitEntry: commitEntry,
   updateVisit: updateVisit,
+  saveDocket: saveDocket,
+  saveSettings: saveSettings,
 };
 
 /** Handles a request from the phone app: { passcode, action, args } → { ok, result } or { ok: false, error }. */
@@ -144,15 +186,14 @@ function coded(code, message) {
   return err;
 }
 
-/**
- * Everything the phone page needs: every visit (one per sheet row), oldest first.
- * The page groups the visits into dockets itself.
- */
+/** Everything the phone app needs: visits (oldest first), dockets, settings and column names. */
 function getAppData() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = getSheet();
+  const sheet = getSheet(VISITS_TAB);
   return {
-    visits: readVisits(sheet),
+    visits: readVisits(),
+    dockets: readDockets(),
+    settings: readSettings(),
     columns: COLUMNS.map(function (c) {
       return { key: c.key, header: c.header, editable: EDITABLE_KEYS.indexOf(c.key) !== -1, required: !!c.required };
     }),
@@ -182,19 +223,20 @@ function proposeEntry(notes, scope, previous) {
   notes = cleanNotes(notes);
   if (!notes.length) throw new Error('Nothing to check: the note is empty.');
   scope = scope || { type: 'any' };
-  const visits = readVisits(getSheet());
+  const ctx = loadContext();
 
   const message = [
     todayLine(),
-    scopeContext(scope, visits),
+    ctx.home ? 'His home address: ' + ctx.home : 'His home address is not set.',
+    scopeContext(scope, ctx),
     previous ? 'Your last proposal, which he is replying to:\n' + JSON.stringify({
-      action: previous.action, target_row: previous.row || 0, fields: previous.fields, you_said: previous.confirmation,
+      action: previous.action, target_row: previous.row || 0, fields: pick(previous.fields || {}, AI_KEYS), you_said: previous.confirmation,
     }, null, 2) : '',
     'What he has said so far, in order:\n' + notes.map(function (n, i) { return (i + 1) + '. """' + n + '"""'; }).join('\n'),
   ].filter(Boolean).join('\n\n');
 
   const answer = callClaude(buildProposalInstructions(scope), message, proposalSchema());
-  return finishProposal(answer, scope, visits);
+  return finishProposal(answer, scope, ctx);
 }
 
 /** Saves a confirmed proposal. With no proposal (Claude couldn't be reached), saves the raw note. */
@@ -204,17 +246,16 @@ function commitEntry(proposal, notes, scope) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const sheet = getSheet();
     if (!proposal) {
       if (scope.type === 'row') throw new Error('Couldn\'t check that change, so nothing was saved. You can edit the fields by hand.');
-      return appendVisit(sheet, { docket_number: scope.docket || '' }, notes.join(' / '),
+      return appendVisit({ docket_number: scope.docket || '' }, notes.join(' / '),
         ['Saved without being checked by Claude: fill in the details by hand']);
     }
     if (proposal.action === 'new') {
       const problems = proposal.needs_review && proposal.review_reason ? [proposal.review_reason] : [];
-      return appendVisit(sheet, proposal.fields, notes.join(' / '), problems);
+      return appendVisit(proposal.fields, notes.join(' / '), problems);
     }
-    if (proposal.action === 'update') return applyChange(sheet, proposal, notes);
+    if (proposal.action === 'update') return applyChange(proposal, notes);
     throw new Error('It isn\'t clear yet which visit this is for, so nothing was saved.');
   } finally {
     lock.releaseLock();
@@ -230,35 +271,70 @@ function updateVisit(row, fingerprint, changes) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const sheet = getSheet();
-    const visit = findVisit(readVisits(sheet), row, fingerprint);
+    const visit = findVisit(readVisits(), row, fingerprint);
     const updated = Object.assign({}, visit);
     EDITABLE_KEYS.forEach(function (key) {
       if (changes[key] !== undefined) updated[key] = key === 'reviewed' ? changes[key] === true : String(changes[key]).trim();
     });
     updated.hours = hoursBetween(updated.arrived, updated.departed);
-    writeCells(sheet, visit.row, updated, EDITABLE_KEYS.concat(['hours']));
+    applyDistance(updated, readSettings().home_address, visit);
+    writeCells(getSheet(VISITS_TAB), visit.row, updated, EDITABLE_KEYS.concat(['hours', 'km_source']));
+    ensureDocket(updated);
     return { docket: updated.docket_number || '', row: visit.row };
   } finally {
     lock.releaseLock();
   }
 }
 
+/** Saves a docket's client and site address (from the phone's Edit docket screen). */
+function saveDocket(docketNumber, changes) {
+  docketNumber = String(docketNumber || '').trim();
+  if (!docketNumber) throw new Error('No docket number.');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const sheet = getSheet(DOCKETS_TAB);
+    const found = readDockets().filter(function (d) { return d.docket_number === docketNumber; })[0];
+    const row = found ? found.row : sheet.getLastRow() + 1;
+    if (!found) sheet.getRange(row, 1).setNumberFormat('@').setValue(docketNumber);
+    if (!found) sheet.getRange(row, 4).setValue(new Date());
+    if (changes.client !== undefined) sheet.getRange(row, 2).setValue(String(changes.client).trim());
+    if (changes.site !== undefined) sheet.getRange(row, 3).setValue(String(changes.site).trim());
+    return { docket: docketNumber };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Saves settings from the phone. The home address is checked with Google Maps first. */
+function saveSettings(changes) {
+  const sheet = getSheet(SETTINGS_TAB);
+  const result = {};
+  if (changes.home_address !== undefined) {
+    const typed = String(changes.home_address).trim();
+    const place = typed ? findPlace(typed) : '';
+    if (typed && !place) throw new Error('Google Maps couldn\'t find that address. Try adding the town or postcode.');
+    writeSetting(sheet, 'home_address', place);
+    result.home_address = place;
+  }
+  return result;
+}
+
 
 /* ═════════════════════════════  SAVING  ═════════════════════════════ */
 
 /** Adds a new visit as a new row. `problems` are reasons the office should check it. */
-function appendVisit(sheet, fields, transcript, problems) {
-  const visits = readVisits(sheet);
-  const known = knownDockets(visits);
+function appendVisit(fields, transcript, problems) {
+  const ctx = loadContext();
   fields = Object.assign({}, fields);
-
-  // Fill in a missing client or site from earlier visits to the same docket.
-  const previous = known[fields.docket_number];
-  if (previous) {
-    if (!fields.client) fields.client = previous.client;
-    if (!fields.site) fields.site = previous.site;
+  const docket = ctx.dockets[fields.docket_number];
+  if (docket) {
+    if (!fields.client) fields.client = docket.client;
+    if (!fields.site) fields.site = docket.site;
   }
+  if (!fields.km_source && fields.travel_km === undefined) applyDistance(fields, ctx.home, null);
+  if (!fields.start_address) fields.start_address = ctx.home;
+  if (!fields.end_address) fields.end_address = ctx.home;
 
   const values = Object.assign({}, fields, {
     recorded_at: new Date(),
@@ -267,6 +343,7 @@ function appendVisit(sheet, fields, transcript, problems) {
     status: statusFor(fields, problems),
     reviewed: false,
   });
+  const sheet = getSheet(VISITS_TAB);
   sheet.appendRow(COLUMNS.map(function (c) {
     const v = values[c.key];
     return (v === undefined || v === null) ? '' : v;
@@ -274,14 +351,15 @@ function appendVisit(sheet, fields, transcript, problems) {
   const row = sheet.getLastRow();
   sheet.getRange(row, colIndex('reviewed')).insertCheckboxes();
   sheet.getRange(row, colIndex('docket_number')).setNumberFormat('@').setValue(values.docket_number || '');
+  ensureDocket(values);
   return { action: 'new', docket: values.docket_number || '', row: row, status: values.status };
 }
 
 /** Applies a confirmed voice change to an existing visit's row. */
-function applyChange(sheet, proposal, notes) {
-  const visit = findVisit(readVisits(sheet), proposal.row, proposal.fingerprint);
+function applyChange(proposal, notes) {
+  const visit = findVisit(readVisits(), proposal.row, proposal.fingerprint);
   const updated = Object.assign({}, visit);
-  AI_KEYS.forEach(function (k) {
+  AI_KEYS.concat(['km_source']).forEach(function (k) {
     if (proposal.fields[k] !== undefined) updated[k] = String(proposal.fields[k]).trim();
   });
   updated.hours = hoursBetween(updated.arrived, updated.departed);
@@ -297,8 +375,25 @@ function applyChange(sheet, proposal, notes) {
   updated.status = statusFor(updated, problems);
   if (visit.reviewed) updated.reviewed = false;
 
-  writeCells(sheet, visit.row, updated, AI_KEYS.concat(['hours', 'transcript', 'status', 'reviewed']));
+  writeCells(getSheet(VISITS_TAB), visit.row, updated, AI_KEYS.concat(['hours', 'km_source', 'transcript', 'status', 'reviewed']));
+  ensureDocket(updated);
   return { action: 'update', docket: updated.docket_number || '', row: visit.row, status: updated.status };
+}
+
+/** Adds a docket to the Dockets tab the first time it's seen, or fills in a blank client/address. */
+function ensureDocket(fields) {
+  const number = String(fields.docket_number || '').trim();
+  if (!number) return;
+  const found = readDockets().filter(function (d) { return d.docket_number === number; })[0];
+  const sheet = getSheet(DOCKETS_TAB);
+  if (!found) {
+    const row = sheet.getLastRow() + 1;
+    sheet.getRange(row, 1).setNumberFormat('@');
+    sheet.getRange(row, 1, 1, 4).setValues([[number, fields.client || '', fields.site || '', new Date()]]);
+    return;
+  }
+  if (!found.client && fields.client) sheet.getRange(found.row, 2).setValue(fields.client);
+  if (!found.site && fields.site) sheet.getRange(found.row, 3).setValue(fields.site);
 }
 
 /** "OK", or "Needs review: …" listing anything the office should check. */
@@ -309,7 +404,7 @@ function statusFor(fields, problems) {
   return problems.length ? 'Needs review: ' + unique(problems).join('; ') : 'OK';
 }
 
-/** Writes the given keys of `values` into one row of the sheet. */
+/** Writes the given keys of `values` into one row of the Visits tab. */
 function writeCells(sheet, row, values, keys) {
   keys.forEach(function (key) {
     const cell = sheet.getRange(row, colIndex(key));
@@ -320,47 +415,155 @@ function writeCells(sheet, row, values, keys) {
 }
 
 
+/* ═════════════════════════════  DRIVING DISTANCE  ═════════════════════════════ */
+
+/**
+ * Fills in the start and end addresses (home unless he said otherwise) and works out the driving
+ * distance start → site → end with Google Maps, unless he said the km himself.
+ * `before` is the visit as it was (for a change), so an unchanged route isn't looked up again.
+ * Changes `fields` in place and returns a sentence for the read-back ('' if nothing to say).
+ */
+function applyDistance(fields, home, before) {
+  if (!fields.start_address) fields.start_address = home || '';
+  if (!fields.end_address) fields.end_address = home || '';
+  const km = String(fields.travel_km || '').trim();
+  const kmBefore = before ? String(before.travel_km || '').trim() : '';
+
+  // He said the distance himself.
+  if (km && (!before || km !== kmBefore)) { fields.km_source = 'Entered'; return ''; }
+
+  // A change that doesn't touch the route keeps the distance it had.
+  const sameRoute = before && kmBefore && ROUTE_KEYS.every(function (k) { return String(fields[k] || '') === String(before[k] || ''); });
+  if (sameRoute) { fields.travel_km = kmBefore; fields.km_source = before.km_source || ''; return ''; }
+
+  fields.travel_km = ''; fields.km_source = '';
+  if (!fields.site) return '';
+  if (!fields.start_address || !fields.end_address) {
+    return 'I couldn\'t work out the driving distance because the home address isn\'t set.';
+  }
+  const found = routeKm([fields.start_address, fields.site, fields.end_address]);
+  if (found === null) return 'I couldn\'t find ' + shortPlace(fields.site) + ' on Google Maps, so I don\'t have the driving distance.';
+  fields.travel_km = String(found);
+  fields.km_source = 'Google Maps';
+  const spoken = Math.round(found);
+  if (kmBefore) return 'The driving distance changes from ' + Math.round(Number(kmBefore)) + ' to ' + spoken + ' kilometres.';
+  if (fields.start_address === home && fields.end_address === home) return 'Driving there and back from home is ' + spoken + ' kilometres.';
+  return 'Driving from ' + placeName(fields.start_address, home) + ' to the site and on to ' + placeName(fields.end_address, home) +
+    ' is ' + spoken + ' kilometres.';
+}
+
+/** Driving distance in km (one decimal) through the given stops, or null if Maps can't route it. */
+function routeKm(stops) {
+  const cache = CacheService.getScriptCache();
+  const key = 'km:' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, stops.join('|')));
+  const hit = cache.get(key);
+  if (hit) return hit === 'none' ? null : Number(hit);
+  let km = null;
+  try {
+    const finder = Maps.newDirectionFinder()
+      .setOrigin(stops[0])
+      .setDestination(stops[stops.length - 1])
+      .setMode(Maps.DirectionFinder.Mode.DRIVING);
+    stops.slice(1, -1).forEach(function (s) { finder.addWaypoint(s); });
+    if (MAPS_REGION) finder.setRegion(MAPS_REGION);
+    const res = finder.getDirections();
+    if (res && res.routes && res.routes.length) {
+      const metres = res.routes[0].legs.reduce(function (sum, leg) { return sum + leg.distance.value; }, 0);
+      km = Math.round(metres / 100) / 10;
+    }
+  } catch (err) {
+    Logger.log('Maps error: ' + err);
+  }
+  cache.put(key, km === null ? 'none' : String(km), km === null ? 600 : 21600);
+  return km;
+}
+
+/** Google Maps' full version of an address, or '' if it can't be found. */
+function findPlace(address) {
+  try {
+    const geocoder = Maps.newGeocoder();
+    if (MAPS_REGION) geocoder.setRegion(MAPS_REGION);
+    const res = geocoder.geocode(address);
+    return res && res.results && res.results.length ? res.results[0].formatted_address : '';
+  } catch (err) {
+    Logger.log('Maps error: ' + err);
+    return '';
+  }
+}
+
+/** "home", or the first part of an address ("48 Kowhai Lane"), for reading out. */
+function placeName(address, home) {
+  return address === home ? 'home' : shortPlace(address);
+}
+function shortPlace(address) {
+  return String(address || '').split(',')[0].trim() || 'that address';
+}
+
+
 /* ═════════════════════════════  CLAUDE  ═════════════════════════════ */
 
+/** The home address, dockets and visits, read once per request. */
+function loadContext() {
+  const visits = readVisits();
+  const dockets = {};
+  // Start from what the visits say, then let the Dockets tab override it.
+  visits.forEach(function (v) {
+    if (!v.docket_number) return;
+    const d = dockets[v.docket_number] || (dockets[v.docket_number] = { client: '', site: '' });
+    if (v.client) d.client = v.client;
+    if (v.site && !d.site) d.site = v.site;
+  });
+  readDockets().forEach(function (d) {
+    const k = dockets[d.docket_number] || (dockets[d.docket_number] = { client: '', site: '' });
+    if (d.client) k.client = d.client;
+    if (d.site) k.site = d.site;
+  });
+  return { visits: visits, dockets: dockets, home: readSettings().home_address || '' };
+}
+
 /** What Claude is told about the dockets and visits, depending on where he started talking. */
-function scopeContext(scope, visits) {
+function scopeContext(scope, ctx) {
+  const visits = ctx.visits;
+  const docketList = Object.keys(ctx.dockets).slice(-150).map(function (d) {
+    return d + ' | ' + (ctx.dockets[d].client || '-') + ' | ' + (ctx.dockets[d].site || '-');
+  });
+  const docketsText = 'Dockets (number | client | site address):\n' + (docketList.join('\n') || 'none yet');
+
   if (scope.type === 'row') {
     const v = visits.filter(function (x) { return x.row === Number(scope.row); })[0];
     if (!v) throw new Error('That visit couldn\'t be found. It may have been changed in the sheet.');
     return 'He is changing this visit (row ' + v.row + '):\n' + JSON.stringify(pick(v, AI_KEYS), null, 2) +
-      (v.docket_number ? '\n\nOther visits to docket ' + v.docket_number + ':\n' +
-        (visitLines(visits.filter(function (x) { return x.docket_number === v.docket_number && x.row !== v.row; }), 10) || 'none') : '');
+      '\n\nOther visits to docket ' + (v.docket_number || '-') + ':\n' +
+      (visitLines(visits.filter(function (x) { return x.docket_number && x.docket_number === v.docket_number && x.row !== v.row; }), 10, ctx.home) || 'none') +
+      '\n\n' + docketsText;
   }
   if (scope.type === 'docket') {
     const own = visits.filter(function (x) { return x.docket_number === scope.docket; });
-    const k = knownDockets(visits)[scope.docket] || {};
-    return 'He is on the page for docket ' + scope.docket + ' (client: ' + (k.client || 'unknown') + ', site: ' +
-      (k.site || 'unknown') + ').\nIts visits (newest first):\n' + (visitLines(own, 30) || 'none yet');
+    const k = ctx.dockets[scope.docket] || {};
+    return 'He is on the page for docket ' + scope.docket + ' (client: ' + (k.client || 'unknown') + ', site address: ' +
+      (k.site || 'unknown') + ').\nIts visits (newest first):\n' + (visitLines(own, 30, ctx.home) || 'none yet') + '\n\n' + docketsText;
   }
-  const known = knownDockets(visits);
-  const dockets = Object.keys(known).slice(-150).map(function (d) {
-    return d + ' | ' + (known[d].client || '-') + ' | ' + (known[d].site || '-');
-  });
-  return 'Existing dockets (number | client | latest site):\n' + (dockets.join('\n') || 'none yet') +
-    '\n\nMost recently recorded visits (newest first):\n' + (visitLines(visits, 40) || 'none yet');
+  return docketsText + '\n\nMost recently recorded visits (newest first):\n' + (visitLines(visits, 40, ctx.home) || 'none yet');
 }
 
 /** One line per visit, newest first, for Claude to pick from. */
-function visitLines(visits, max) {
+function visitLines(visits, max, home) {
+  const where = function (a) { return !a || a === home ? 'home' : a; };
   return visits.slice()
     .sort(function (a, b) { return (b.job_date || '').localeCompare(a.job_date || '') || b.row - a.row; })
     .slice(0, max)
     .map(function (v) {
       return 'row ' + v.row + ' | docket ' + (v.docket_number || 'none') + ' | ' + (v.job_date || 'no date') + ' | ' +
         (v.client || '-') + ' | ' + (v.site || '-') + ' | ' + (v.arrived || '?') + '–' + (v.departed || '?') +
-        ' | ' + (v.travel_km ? v.travel_km + ' km | ' : '') + 'work: ' + String(v.work_done || '').slice(0, 100) +
+        ' | from ' + where(v.start_address) + ', then to ' + where(v.end_address) +
+        (v.travel_km ? ' | ' + v.travel_km + ' km' : '') + ' | work: ' + String(v.work_done || '').slice(0, 100) +
         (v.follow_up ? ' | follow-up: ' + String(v.follow_up).slice(0, 60) : '');
     }).join('\n');
 }
 
 /** The instructions Claude gets for proposing a record. */
 function buildProposalInstructions(scope) {
-  const required = AI_COLUMNS.filter(function (c) { return c.required; }).map(function (c) { return c.header; });
+  const required = AI_COLUMNS.filter(function (c) { return c.required && !c.auto; }).map(function (c) { return c.header; });
   const where = scope.type === 'row'
     ? 'He started from one visit\'s Edit screen, so this is always a change to that visit: action "update" with its row number.'
     : scope.type === 'docket'
@@ -379,7 +582,12 @@ function buildProposalInstructions(scope) {
     '',
     'Every field must hold the actual information, never a reference to it. If he says things like',
     '"same place as last time", "same location as the previous visit", "same client" or "same hours',
-    'as yesterday", look up the real value in the visits you are given and use that.',
+    'as yesterday", look up the real value in the dockets and visits you are given and use that.',
+    '',
+    'Driving: trips normally start and end at his home, and the app works out the distance with',
+    'Google Maps. Only fill start_address or end_address when he says he came from, or went on to,',
+    'somewhere other than home; use a docket\'s site address when he names another job. Only fill',
+    'travel_km when he says the distance himself.',
     '',
     'Choosing the action:',
     '- "new": a visit that isn\'t recorded yet. target_row is 0.',
@@ -400,11 +608,12 @@ function buildProposalInstructions(scope) {
     'Required details: ' + required.join(', ') + '.',
     '',
     'confirmation: what the app will read aloud to him. Plain spoken English, no symbols, lists or',
-    'abbreviations, under 60 words. For a new visit, briefly say the docket, client, site, day, times,',
-    'work and km. For a change, say which visit (docket and day) and only what is changing. Then name',
-    'any required details that are still missing, and end with "Shall I save it?". If the action is',
-    '"unclear", ask your question instead. Say times naturally ("half past eight", "eleven fifteen")',
-    'and days relative to today ("today", "yesterday", "Tuesday the twelfth").',
+    'abbreviations, under 60 words. For a new visit, briefly say the docket, client, site, day, times',
+    'and work. For a change, say which visit (docket and day) and only what is changing. Don\'t',
+    'mention driving or kilometres unless he said the km himself: the app adds the distance. Then name',
+    'any required details that are still missing, and end with exactly "Shall I save it?". If the',
+    'action is "unclear", ask your question instead. Say times naturally ("half past eight") and days',
+    'relative to today ("today", "yesterday", "Tuesday the twelfth").',
     '',
     'Fields:',
     AI_COLUMNS.map(function (c) { return '- ' + c.key + ': ' + c.ask; }).join('\n'),
@@ -431,9 +640,10 @@ function proposalSchema() {
 
 /**
  * Checks Claude's proposal against the sheet and adds what the phone needs to show it:
- * the visit being changed, what changes, hours, and which required details are missing.
+ * the visit being changed, what changes, hours, distance, and which required details are missing.
  */
-function finishProposal(answer, scope, visits) {
+function finishProposal(answer, scope, ctx) {
+  const visits = ctx.visits;
   const p = {
     action: answer.action,
     row: 0,
@@ -442,31 +652,39 @@ function finishProposal(answer, scope, visits) {
     review_reason: answer.review_reason || '',
     confirmation: answer.confirmation || '',
   };
+  let target = null;
 
   if (scope.type === 'row') { p.action = 'update'; answer.target_row = Number(scope.row); }
 
   if (p.action === 'update') {
-    const target = visits.filter(function (v) { return v.row === Number(answer.target_row); })[0];
+    target = visits.filter(function (v) { return v.row === Number(answer.target_row); })[0];
     const allowed = target && (scope.type !== 'docket' || target.docket_number === scope.docket);
     if (!allowed) {
+      target = null;
       p.action = 'unclear';
       p.confirmation = 'Sorry, I couldn\'t tell which visit you meant. Which docket and day was it?';
     } else {
       p.row = target.row;
       p.fingerprint = { recorded_at: target.recorded_at, transcript: target.transcript };
       p.target = { docket: target.docket_number, job_date: target.job_date, client: target.client, site: target.site };
-      p.changes = AI_COLUMNS.filter(function (c) { return String(target[c.key] || '') !== String(p.fields[c.key] || ''); })
-        .map(function (c) { return { label: c.header, from: String(target[c.key] || ''), to: String(p.fields[c.key] || '') }; });
     }
   }
 
   if (p.action === 'new') {
     if (scope.type === 'docket') p.fields.docket_number = scope.docket;
-    const known = knownDockets(visits)[p.fields.docket_number];
-    if (known) {
-      if (!p.fields.client) p.fields.client = known.client;
-      if (!p.fields.site) p.fields.site = known.site;
+    const docket = ctx.dockets[p.fields.docket_number];
+    if (docket) {
+      if (!p.fields.client) p.fields.client = docket.client;
+      if (!p.fields.site) p.fields.site = docket.site;
     }
+  }
+
+  if (p.action !== 'unclear') {
+    addToConfirmation(p, applyDistance(p.fields, ctx.home, target));
+  }
+  if (target) {
+    p.changes = AI_COLUMNS.filter(function (c) { return String(target[c.key] || '') !== String(p.fields[c.key] || ''); })
+      .map(function (c) { return { key: c.key, label: c.header, from: String(target[c.key] || ''), to: String(p.fields[c.key] || '') }; });
   }
 
   p.docket = p.fields.docket_number || '';
@@ -474,6 +692,15 @@ function finishProposal(answer, scope, visits) {
   p.missing = AI_COLUMNS.filter(function (c) { return c.required && !String(p.fields[c.key] || '').trim(); })
     .map(function (c) { return c.header; });
   return p;
+}
+
+/** Puts a sentence into the read-back, just before "Shall I save it?". */
+function addToConfirmation(p, sentence) {
+  if (!sentence) return;
+  const question = /\s*Shall I save it\?\s*$/i;
+  p.confirmation = question.test(p.confirmation)
+    ? p.confirmation.replace(question, ' ' + sentence + ' Shall I save it?')
+    : (p.confirmation + ' ' + sentence).trim();
 }
 
 /** "Today is 2026-11-15 (Sunday) and the time now is 14:05." */
@@ -531,30 +758,39 @@ function callClaude(system, message, schema) {
 /* ═════════════════════════════  TESTING  ═════════════════════════════ */
 
 /**
- * Run this from the editor (choose testPropose, then Run), then open the Execution log.
- * It checks that Claude is working, using your real dockets, without saving anything.
+ * Run these from the editor (choose one in the dropdown, then Run) and open the Execution log.
+ * Neither saves anything.
  */
 function testPropose() {
-  const sample = 'Docket 4521, got to the Henderson place on Mill Road at quarter past nine, ' +
-    'set out four boundary pegs along the north fence, left about eleven thirty, drove 42 k.';
-  const proposal = proposeEntry([sample], { type: 'any' }, null);
-  Logger.log(JSON.stringify(proposal, null, 2));
+  const sample = 'Docket 4521, got to the Henderson place at 12 Mill Road at quarter past nine, ' +
+    'set out four boundary pegs along the north fence, left about eleven thirty.';
+  Logger.log(JSON.stringify(proposeEntry([sample], { type: 'any' }, null), null, 2));
+}
+
+function testDistance() {
+  const home = readSettings().home_address;
+  if (!home) return Logger.log('Put the home address in the Settings tab first.');
+  Logger.log('Home: ' + home);
+  const site = (readDockets().filter(function (d) { return d.site; })[0] || {}).site;
+  if (!site) return Logger.log('Add a docket with a site address first (or record a visit).');
+  Logger.log('Home → ' + site + ' → home: ' + routeKm([home, site, home]) + ' km');
 }
 
 
 /* ═════════════════════════════  HELPERS  ═════════════════════════════ */
 
-function getSheet() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  if (!sheet) throw new Error('No "' + SHEET_NAME + '" tab yet. Run setupSheet() in the editor first.');
+function getSheet(name) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sheet) throw new Error('No "' + name + '" tab yet. Run setupSheet() in the Apps Script editor first.');
   return sheet;
 }
 
 /**
- * Every row of the sheet as a plain object keyed by the COLUMNS keys, plus `row`
+ * Every row of the Visits tab as a plain object keyed by the COLUMNS keys, plus `row`
  * (the sheet row number). Dates come back as YYYY-MM-DD and times as HH:mm.
  */
-function readVisits(sheet) {
+function readVisits() {
+  const sheet = getSheet(VISITS_TAB);
   const last = sheet.getLastRow();
   if (last < 2) return [];
   const range = sheet.getRange(2, 1, last - 1, COLUMNS.length);
@@ -576,16 +812,36 @@ function readVisits(sheet) {
   }).filter(function (v) { return v.recorded_at || v.docket_number || v.transcript; });
 }
 
-/** { "4521": { client, site }, ... } using the latest non-empty value for each docket. */
-function knownDockets(visits) {
-  const known = {};
-  visits.forEach(function (v) {
-    if (!v.docket_number) return;
-    const k = known[v.docket_number] || (known[v.docket_number] = { client: '', site: '' });
-    if (v.client) k.client = v.client;
-    if (v.site) k.site = v.site;
+/** Every row of the Dockets tab: { docket_number, client, site, row }. */
+function readDockets() {
+  const sheet = getSheet(DOCKETS_TAB);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, 3).getDisplayValues().map(function (r, i) {
+    return { docket_number: r[0].trim(), client: r[1].trim(), site: r[2].trim(), row: i + 2 };
+  }).filter(function (d) { return d.docket_number; });
+}
+
+/** The Settings tab as { home_address: '…' }. */
+function readSettings() {
+  const sheet = getSheet(SETTINGS_TAB);
+  const last = sheet.getLastRow();
+  const rows = last >= 2 ? sheet.getRange(2, 1, last - 1, 2).getDisplayValues() : [];
+  const out = {};
+  SETTINGS.forEach(function (s) {
+    const row = rows.filter(function (r) { return r[0].trim() === s.label; })[0];
+    out[s.key] = row ? row[1].trim() : '';
   });
-  return known;
+  return out;
+}
+
+function writeSetting(sheet, key, value) {
+  const label = SETTINGS.filter(function (s) { return s.key === key; })[0].label;
+  const last = sheet.getLastRow();
+  const labels = last >= 2 ? sheet.getRange(2, 1, last - 1, 1).getDisplayValues().map(function (r) { return r[0].trim(); }) : [];
+  const i = labels.indexOf(label);
+  const row = i === -1 ? Math.max(last, 1) + 1 : i + 2;
+  sheet.getRange(row, 1, 1, 2).setValues([[label, value]]);
 }
 
 /**
@@ -623,7 +879,7 @@ function toHHmm(text) {
   return ('0' + h).slice(-2) + ':' + m[2];
 }
 
-/** 1-based column number for a key in COLUMNS. */
+/** 1-based column number for a key in COLUMNS (the Visits tab). */
 function colIndex(key) {
   for (let i = 0; i < COLUMNS.length; i++) if (COLUMNS[i].key === key) return i + 1;
   throw new Error('Unknown column key: ' + key);
