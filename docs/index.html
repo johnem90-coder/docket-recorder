@@ -289,7 +289,12 @@ function render(route) {
   app.replaceChildren();
   if (view === 'connect') return renderConnect();
   if (view === 'record') return renderTalk(key === 'new' ? { type: 'any' } : { type: 'docket', docket: key });
-  if (!state.loaded) return app.append(el('p', { class: 'empty', text: state.error || 'Loading dockets…' }));
+  if (!state.loaded) {
+    if (!state.error) return app.append(el('p', { class: 'empty', text: 'Loading dockets…' }));
+    return put(el('p', { class: 'empty', text: state.error }),
+      el('button', { class: 'primary', type: 'button', text: 'Try again', onclick: () => { state.error = ''; render(currentRoute); loadData(); } }),
+      el('button', { class: 'secondary wide', type: 'button', text: '⚙ Connection settings', onclick: () => go('connect') }));
+  }
   if (view === 'docket') return renderDocket(key);
   if (view === 'edit') return renderEdit(Number(key));
   if (view === 'change') return renderTalk({ type: 'row', row: Number(key) });
@@ -1092,32 +1097,44 @@ const connection = () => {
   return url && passcode ? { url, passcode } : null;
 };
 
-function server(ok, fail) {
+function server(ok, fail, tryConn) {
   const call = action => (...args) => {
-    const conn = connection();
+    const conn = tryConn || connection();
     const failed = message => { const err = new Error(message); vlog('server: ' + message); if (fail) fail(err); };
     if (!conn) return failed('Not connected yet.');
     fetch(conn.url, { method: 'POST', body: JSON.stringify({ passcode: conn.passcode, action, args }) })
       .then(res => res.text())
       .then(text => {
         let reply;
-        try { reply = JSON.parse(text); } catch (e) { return failed('The app link didn\'t answer properly. Check it\'s the /exec link and set to "Anyone".'); }
+        try { reply = JSON.parse(text); } catch (e) { return failed(LINK_HELP); }
         if (!reply.ok) {
-          if (reply.code === 'passcode' || reply.code === 'setup') writePref('connectProblem', reply.error);
+          if (!tryConn && (reply.code === 'passcode' || reply.code === 'setup')) writePref('connectProblem', reply.error);
           return failed(reply.error);
         }
         if (ok) ok(reply.result);
       })
-      .catch(() => failed('No connection. Check your signal and try again.'));
+      // A link that isn't open to "Anyone" (or isn't deployed) looks the same as no signal here.
+      .catch(() => failed(tryConn ? LINK_HELP : 'No connection. Check your signal and try again.'));
   };
   return {
-    withSuccessHandler: fn => server(fn, fail),
-    withFailureHandler: fn => server(ok, fn),
+    withSuccessHandler: fn => server(fn, fail, tryConn),
+    withFailureHandler: fn => server(ok, fn, tryConn),
     getAppData: call('getAppData'),
     proposeEntry: call('proposeEntry'),
     commitEntry: call('commitEntry'),
     updateVisit: call('updateVisit'),
   };
+}
+
+const LINK_HELP = 'Couldn\'t reach the app link. Open it in an incognito tab: it should say "Docket Recorder is running" ' +
+  'without asking you to sign in. If it asks you to sign in, set Who has access to Anyone (Deploy → Manage deployments → ✏️) ' +
+  'and deploy a New version.';
+
+// Tidies a pasted link: spaces, a trailing slash, or anything after /exec.
+function cleanLink(text) {
+  let link = String(text || '').trim().replace(/\s+/g, '');
+  link = link.replace(/\/(exec|dev)[/?#].*$/, '/$1').replace(/\/+$/, '');
+  return link;
 }
 
 /* ── The Connect screen (first use, or after a wrong passcode) ── */
@@ -1126,19 +1143,24 @@ function renderConnect() {
   const url = el('input', { type: 'url', placeholder: 'https://script.google.com/macros/s/…/exec', value: readPref('apiUrl', '') });
   const code = el('input', { type: 'password', placeholder: 'Passcode', value: readPref('passcode', '') });
   const message = el('div', { class: 'banner error', hidden: !problem, text: problem });
+  const say = text => { message.hidden = false; message.textContent = text; };
   const connect = el('button', { class: 'primary', type: 'button', text: 'Connect', onclick: () => {
-    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url.value.trim())) {
-      message.hidden = false; message.textContent = 'The app link should start with https://script.google.com/ and end with /exec.'; return;
-    }
-    writePref('apiUrl', url.value.trim()); writePref('passcode', code.value.trim()); writePref('connectProblem', '');
+    const link = cleanLink(url.value);
+    url.value = link;
+    if (/\/dev$/.test(link)) return say('That\'s the /dev test link. In Apps Script use Deploy → Manage deployments and copy the Web app URL ending in /exec.');
+    if (!/^https:\/\/script\.google\.com\/.*\/s\/[\w-]+\/exec$/.test(link)) return say('The app link should start with https://script.google.com/ and end with /exec.');
+    if (!code.value.trim()) return say('Type the passcode (APP_PASSCODE in Script properties).');
+    const tryConn = { url: link, passcode: code.value.trim() };
     connect.disabled = true; connect.textContent = 'Connecting…';
+    // Only remember the link and passcode once they've worked.
     server(data => {
+      writePref('apiUrl', tryConn.url); writePref('passcode', tryConn.passcode); writePref('connectProblem', '');
       Object.assign(state, data, { loaded: true, error: '' });
       go('', true);
     }, err => {
       connect.disabled = false; connect.textContent = 'Connect';
-      message.hidden = false; message.textContent = err.message;
-    }).getAppData();
+      say(err.message);
+    }, tryConn).getAppData();
   } });
   put(
     el('div', { class: 'bar' }, el('h1', { text: 'Connect' })),
