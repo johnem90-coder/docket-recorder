@@ -596,6 +596,9 @@ function buildProposalInstructions(scope) {
     '  target_row is that visit\'s row number from the list. fields is the complete record after the',
     '  change: copy every field he didn\'t ask to change exactly as it is.',
     '- "unclear": you can\'t tell which visit he means, or whether it\'s new. Ask him in the confirmation.',
+    '- "cancel": he wants to stop and save nothing at all, e.g. "cancel that", "no, forget the whole',
+    '  thing", "I don\'t want to save this". (Clearing one field, like "cancel the follow-up", is an',
+    '  update, not a cancel.) The confirmation is then just "Okay, I won\'t save that."',
     where,
     '',
     'For a new visit with no docket number: if it clearly matches exactly one existing docket (same',
@@ -628,7 +631,7 @@ function proposalSchema() {
   const fieldProps = {};
   AI_KEYS.forEach(function (k) { fieldProps[k] = { type: 'string' }; });
   const properties = {
-    action: { type: 'string', enum: ['new', 'update', 'unclear'] },
+    action: { type: 'string', enum: ['new', 'update', 'unclear', 'cancel'] },
     target_row: { type: 'integer' },
     fields: { type: 'object', properties: fieldProps, required: AI_KEYS, additionalProperties: false },
     needs_review: { type: 'boolean' },
@@ -653,6 +656,14 @@ function finishProposal(answer, scope, ctx) {
     confirmation: answer.confirmation || '',
   };
   let target = null;
+
+  // He asked to stop: nothing more to work out, and the phone won't listen again.
+  if (p.action === 'cancel') {
+    p.confirmation = 'Okay, I won\'t save that.';
+    p.missing = [];
+    p.docket = '';
+    return p;
+  }
 
   if (scope.type === 'row') { p.action = 'update'; answer.target_row = Number(scope.row); }
 

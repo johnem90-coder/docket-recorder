@@ -596,7 +596,9 @@ function renderTalk(scope) {
         note.value = text; writePref(draftKey, text);
         if (why === 'blocked') return show('warn', 'The phone didn\'t let the app listen. Tap 🎤 Tap to talk to try again.');
         if (why === 'failed') return show('warn', 'The mic stopped working. Tap 🎤 Tap to talk to try again.');
-        if (text.trim() && why !== 'cancelled') next();
+        if (!text.trim() || why === 'cancelled') return;
+        if (isCancel(text)) return discard();          // "cancel" as the note itself
+        next();
       },
     });
   }
@@ -639,7 +641,8 @@ function renderTalk(scope) {
     server()
       .withSuccessHandler(p => {
         if (!alive()) return;
-        vlog('proposal: ' + p.action + (p.missing.length ? ', missing ' + p.missing.join(', ') : ''));
+        vlog('proposal: ' + p.action + (p.missing && p.missing.length ? ', missing ' + p.missing.join(', ') : ''));
+        if (p.action === 'cancel') return discard();   // Claude heard him say to stop
         talk.proposal = p;
         drawReview();
         if (handsFree()) speakThenListen(p.confirmation);
@@ -786,8 +789,11 @@ function renderTalk(scope) {
       .commitEntry(raw === true ? null : talk.proposal, talk.notes, scope);
   }
 
+  // Stops the whole conversation: nothing is saved and the mic stays off.
   function discard() {
+    vlog('cancelled: nothing saved');
     stopTalking();
+    if (noteListen) noteListen.cancel();
     if (replyListen) replyListen.cancel();
     writePref(draftKey, '');
     goUp(parent);
@@ -817,7 +823,12 @@ function renderTalk(scope) {
 
 // Short answers that mean yes / cancel / just "no" / say it again.
 const isYes = t => t.length <= 40 && /^\s*(yes|yeah|yep|yup|yes please|correct|that'?s (right|correct|good)|right|save( it)?|sounds good|all good|good|perfect|ok(ay)?|confirm(ed)?|go ahead|do it)\b[\s\S]{0,18}$/i.test(t);
-const isCancel = t => /^\s*(cancel|discard|forget (it|that)|scrap (it|that)|delete (it|that)|never ?mind|don'?t save)\b/i.test(t);
+// A short reply (up to 8 words) with a cancel word anywhere in it: "no, cancel that", "actually
+// scrap it", "I want to cancel". Longer replies go to Claude, which can also answer "cancel".
+const CANCEL_WORDS = /\b(cancel|discard|abort|never ?mind|forget (it|that|this|about it|the whole thing|everything)|scrap (it|that|this|the whole thing|everything)|don'?t (save|bother)( it| that| this)?|stop (it|that|this|everything|listening))\b|^\s*stop[\s.!]*$/i;
+// ...but "cancel the follow-up" or "scrap the notes" is a correction to one field, not a cancel.
+const FIELD_WORDS = /\b(cancel|scrap|forget) (the )?(follow[- ]?up|notes?|equipment|km|kilomet(er|re)s|times?|address|site|start|end|arrival|departure)\b/i;
+const isCancel = t => t.trim().split(/\s+/).length <= 8 && CANCEL_WORDS.test(t) && !FIELD_WORDS.test(t);
 const isBareNo = t => /^\s*(no|nope|nah)[\s.!]*$/i.test(t);
 const isRepeat = t => t.length <= 40 && /^\s*(what\??|pardon|sorry\??|(can you )?(say|read) (that|it) again|repeat( that| it)?|again)[\s.!?]*$/i.test(t);
 
@@ -1107,6 +1118,12 @@ function listen(opts) {
         h.session = r.done.replace(DONE_PHRASE, '');
         opts.onWords(joinText(h.kept, h.session));
         return finish('done-phrase');
+      }
+      // A short note that's just "cancel" (or similar) ends straight away.
+      if (opts.mode === 'note' && r.done && isCancel(joinText(h.kept, r.done))) {
+        h.session = r.done;
+        opts.onWords(joinText(h.kept, h.session));
+        return finish('cancel-phrase');
       }
       h.session = r.done;
       if (h.on) opts.onWords(joinText(h.kept, words));
